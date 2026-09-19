@@ -1,7 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../../../data/models/marker_media.dart';
 import '../../../data/models/user_marker.dart';
+import '../../../services/media/marker_media_service.dart';
+import '../media/marker_media_section.dart';
 import '../object_bottom_sheet.dart';
+import '../poi/marker_appearance_button.dart';
 
 class MarkerBottomSheet extends StatefulWidget {
   const MarkerBottomSheet({
@@ -14,6 +20,7 @@ class MarkerBottomSheet extends StatefulWidget {
     required this.onCopyCoordinates,
     required this.onNavigation,
     required this.onDirection,
+    this.mediaService,
   });
 
   final UserMarker marker;
@@ -25,6 +32,9 @@ class MarkerBottomSheet extends StatefulWidget {
   final VoidCallback onNavigation;
   final VoidCallback onDirection;
 
+  /// Optional injection point (tests, or a host that shares one service).
+  final MarkerMediaService? mediaService;
+
   static Future<UserMarker?> show(
     BuildContext context, {
     required UserMarker marker,
@@ -35,6 +45,7 @@ class MarkerBottomSheet extends StatefulWidget {
     required VoidCallback onCopyCoordinates,
     required VoidCallback onNavigation,
     required VoidCallback onDirection,
+    MarkerMediaService? mediaService,
   }) {
     return showModalBottomSheet<UserMarker>(
       context: context,
@@ -49,6 +60,7 @@ class MarkerBottomSheet extends StatefulWidget {
         onCopyCoordinates: onCopyCoordinates,
         onNavigation: onNavigation,
         onDirection: onDirection,
+        mediaService: mediaService,
       ),
     );
   }
@@ -60,12 +72,25 @@ class MarkerBottomSheet extends StatefulWidget {
 class _MarkerBottomSheetState extends State<MarkerBottomSheet> {
   late final TextEditingController _nameController;
   late final TextEditingController _descriptionController;
+  late final MarkerMediaService _mediaService;
+  late final bool _ownsMediaService;
+  late final Set<String> _originalRefs;
+  final Set<String> _sessionRefs = <String>{};
   late UserMarker _marker;
+
+  /// Set only when the editor result is returned to the caller: the new files
+  /// are referenced by the saved marker from that moment on.
+  bool _committed = false;
+  bool _saving = false;
+  final _mediaKey = GlobalKey<MarkerMediaSectionState>();
 
   @override
   void initState() {
     super.initState();
     _marker = widget.marker;
+    _originalRefs = widget.marker.media.map((item) => item.fileRef).toSet();
+    _mediaService = widget.mediaService ?? MarkerMediaService();
+    _ownsMediaService = widget.mediaService == null;
     _nameController = TextEditingController(text: _marker.name);
     _descriptionController =
         TextEditingController(text: _marker.description ?? '');
@@ -75,7 +100,27 @@ class _MarkerBottomSheetState extends State<MarkerBottomSheet> {
   void dispose() {
     _nameController.dispose();
     _descriptionController.dispose();
+    if (!_committed) {
+      // Cancelled edit: remove the files this session created. Saved
+      // attachments and the user's originals are never touched.
+      unawaited(_discardDrafts());
+    }
+    if (_ownsMediaService) unawaited(_mediaService.dispose());
     super.dispose();
+  }
+
+  Future<void> _discardDrafts() async {
+    try {
+      await _mediaService.store.discardDrafts(
+        originalRefs: _originalRefs,
+        currentRefs: <String>{
+          ..._sessionRefs,
+          ..._marker.media.map((item) => item.fileRef),
+        },
+      );
+    } catch (_) {
+      // Cleanup is best effort: a locked file can be removed later.
+    }
   }
 
   UserMarker get _result => _marker.copyWith(
@@ -85,74 +130,56 @@ class _MarkerBottomSheetState extends State<MarkerBottomSheet> {
         description: _descriptionController.text.trim(),
       );
 
+  void _handleMediaChanged(List<MarkerMedia> media) {
+    setState(() => _marker = _marker.copyWith(media: media));
+  }
+
+  Future<void> _commit() async {
+    if (_saving) return;
+    _saving = true;
+    final ready = await _mediaKey.currentState?.prepareToSave() ?? true;
+    _saving = false;
+    if (!mounted || !ready) return;
+    _committed = true;
+    Navigator.pop(context, _result);
+  }
+
   @override
   Widget build(BuildContext context) {
     return ObjectBottomSheet(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Row(
-            children: <Widget>[
-              InkWell(
-                customBorder: const CircleBorder(),
-                onTap: () async {
-                  final updated = await widget.onStyle(_result);
-                  if (updated != null && mounted) {
-                    setState(() => _marker = updated);
-                  }
-                },
-                child: CircleAvatar(
-                  child: Icon(
-                    Icons.location_on,
-                    color: Color(
-                      int.parse(_marker.colorHex.replaceFirst('#', '0xFF')),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  children: <Widget>[
-                    TextField(
-                      controller: _nameController,
-                      decoration: const InputDecoration(
-                        labelText: 'Название',
-                        isDense: true,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    TextField(
-                      controller: _descriptionController,
-                      minLines: 1,
-                      maxLines: 2,
-                      decoration: const InputDecoration(
-                        labelText: 'Описание',
-                        isDense: true,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+          TextField(
+            controller: _nameController,
+            decoration:
+                const InputDecoration(labelText: 'Название', isDense: true),
           ),
           const SizedBox(height: 12),
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Text('Размер метки'),
+          MarkerMediaSection(
+            key: _mediaKey,
+            descriptionController: _descriptionController,
+            media: _marker.media,
+            service: _mediaService,
+            onChanged: _handleMediaChanged,
+            onDraftCreated: _sessionRefs.add,
           ),
-          SegmentedButton<double>(
-            segments: const <ButtonSegment<double>>[
-              ButtonSegment<double>(value: 24, label: Text('Маленький')),
-              ButtonSegment<double>(value: 32, label: Text('Средний')),
-              ButtonSegment<double>(value: 48, label: Text('Большой')),
-            ],
-            selected: <double>{_closestSize(_marker.size)},
-            showSelectedIcon: false,
-            onSelectionChanged: (selection) => setState(
-              () => _marker = _marker.copyWith(size: selection.first),
-            ),
-          ),
+          const SizedBox(height: 12),
+          Row(children: <Widget>[
+            MarkerAppearanceButton(
+                shape: _marker.shape,
+                colorHex: _marker.colorHex,
+                onTap: _editAppearance),
+            const SizedBox(width: 12),
+            Expanded(
+                child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Внешний вид'),
+              subtitle: const Text('Форма, цвет и размер'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _editAppearance,
+            )),
+          ]),
           SwitchListTile.adaptive(
             contentPadding: EdgeInsets.zero,
             title: const Text('Видимость на карте'),
@@ -160,8 +187,12 @@ class _MarkerBottomSheetState extends State<MarkerBottomSheet> {
             onChanged: (value) =>
                 setState(() => _marker = _marker.copyWith(visible: value)),
           ),
+          const SizedBox(height: 12),
+          const Divider(height: 1),
           _action(Icons.share, 'Поделиться', widget.onShare),
           _action(Icons.delete, 'Удалить', () async {
+            // The marker (and therefore its attachments, including the drafts
+            // of this session) disappears with it.
             if (await widget.onDelete(_result) && context.mounted) {
               Navigator.pop(context);
             }
@@ -174,7 +205,7 @@ class _MarkerBottomSheetState extends State<MarkerBottomSheet> {
           Align(
             alignment: Alignment.centerRight,
             child: FilledButton(
-              onPressed: () => Navigator.pop(context, _result),
+              onPressed: _commit,
               child: const Text('Готово'),
             ),
           ),
@@ -196,9 +227,8 @@ class _MarkerBottomSheetState extends State<MarkerBottomSheet> {
         onTap: onTap,
       );
 
-  static double _closestSize(double size) {
-    if (size < 28) return 24;
-    if (size < 40) return 32;
-    return 48;
+  Future<void> _editAppearance() async {
+    final updated = await widget.onStyle(_result);
+    if (updated != null && mounted) setState(() => _marker = updated);
   }
 }

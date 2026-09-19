@@ -8,6 +8,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'presentation/screens/map_screen.dart';
+import 'presentation/widgets/app_notifications.dart';
+import 'presentation/widgets/app_scroll.dart';
 import 'theme/app_theme.dart';
 
 const _spectralCacheCleanupKey = 'spectral_cache_cleanup_days';
@@ -109,6 +111,11 @@ class _DiggerMapsAppState extends State<DiggerMapsApp> {
       themeMode: _themeMode,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
+      // Единый scrollbar для всех вертикальных списков/меню.
+      scrollBehavior: appScrollBehavior,
+      // Единый канал SnackBar поверх маршрутов, диалогов и bottom sheet.
+      builder: (context, child) =>
+          AppNotificationsHost(child: child ?? const SizedBox.shrink()),
       home: ThemeModeScope(
         mode: _themeMode,
         onChanged: setThemeMode,

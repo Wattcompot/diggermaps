@@ -2,13 +2,23 @@ import 'package:flutter/material.dart';
 
 import '../../providers/map_calibration_controller.dart';
 
+/// Панель калибровки растровой карты.
+///
+/// При `embedded == false` (по умолчанию) позиционирует себя сама — прежнее
+/// поведение, совместимое с текущим вызовом из `MapScreen`. При
+/// `embedded == true` возвращается только содержимое ([CalibrationPanel]) для
+/// размещения внутри `MapBottomDock`.
 class CalibrationControls extends StatelessWidget {
   const CalibrationControls({
     super.key,
     required this.controller,
+    this.embedded = false,
   });
 
   final MapCalibrationController controller;
+
+  /// Не позиционировать себя самостоятельно (для `MapBottomDock`).
+  final bool embedded;
 
   @override
   Widget build(BuildContext context) {
@@ -17,7 +27,7 @@ class CalibrationControls extends StatelessWidget {
       builder: (context, _) {
         final map = controller.activeCalibrationMap;
         if (map == null) return const SizedBox.shrink();
-        return _CalibrationPanel(
+        final panel = CalibrationPanel(
           mapName: map.name,
           stepMeters: controller.calibrationStepMeters,
           onStepChanged: controller.setStepMeters,
@@ -25,13 +35,22 @@ class CalibrationControls extends StatelessWidget {
           onReset: controller.resetActiveMapOffset,
           onDone: controller.finish,
         );
+        if (embedded) return panel;
+        return Positioned(
+          left: 12,
+          right: 12,
+          bottom: MediaQuery.paddingOf(context).bottom + 12,
+          child: panel,
+        );
       },
     );
   }
 }
 
-class _CalibrationPanel extends StatelessWidget {
-  const _CalibrationPanel({
+/// Содержимое панели калибровки без позиционирования.
+class CalibrationPanel extends StatelessWidget {
+  const CalibrationPanel({
+    super.key,
     required this.mapName,
     required this.stepMeters,
     required this.onStepChanged,
@@ -53,74 +72,70 @@ class _CalibrationPanel extends StatelessWidget {
     final panelColor = theme.brightness == Brightness.dark
         ? const Color(0xCC1E1E1E)
         : theme.colorScheme.surface.withValues(alpha: 0.96);
-    return Positioned(
-      left: 12,
-      right: 12,
-      bottom: MediaQuery.paddingOf(context).bottom + 12,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: <Widget>[
-          Container(
-            width: 230,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-            decoration: BoxDecoration(
-              color: panelColor,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Row(
-              children: <Widget>[
-                Expanded(
-                  child: Slider(
-                    value: stepMeters.toDouble(),
-                    min: 1,
-                    max: 50,
-                    divisions: 49,
-                    label: '$stepMeters м',
-                    activeColor: const Color(0xFFA67B5B),
-                    inactiveColor: Colors.grey,
-                    onChanged: (value) => onStepChanged(value.round()),
-                  ),
-                ),
-                SizedBox(width: 42, child: Text('$stepMeters м')),
-              ],
-            ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: <Widget>[
+        Container(
+          width: 230,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+          decoration: BoxDecoration(
+            color: panelColor,
+            borderRadius: BorderRadius.circular(8),
           ),
-          const SizedBox(height: 8),
-          _DPad(
-            panelColor: panelColor,
-            onShift: onShift,
-            onReset: onReset,
-          ),
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
-            decoration: BoxDecoration(
-              color: panelColor,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Row(
-              children: <Widget>[
-                Expanded(
-                  child: Text(
-                    'Сдвиг: $mapName',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: Slider(
+                  value: stepMeters.toDouble(),
+                  min: 1,
+                  max: 50,
+                  divisions: 49,
+                  label: '$stepMeters м',
+                  activeColor: const Color(0xFFA67B5B),
+                  inactiveColor: Colors.grey,
+                  onChanged: (value) => onStepChanged(value.round()),
                 ),
-                FilledButton(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFFA67B5B),
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: onDone,
-                  child: const Text('Готово'),
-                ),
-              ],
-            ),
+              ),
+              SizedBox(width: 42, child: Text('$stepMeters м')),
+            ],
           ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 8),
+        _DPad(
+          panelColor: panelColor,
+          onShift: onShift,
+          onReset: onReset,
+        ),
+        const SizedBox(height: 8),
+        Container(
+          padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+          decoration: BoxDecoration(
+            color: panelColor,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  'Сдвиг: $mapName',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFA67B5B),
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: onDone,
+                child: const Text('Готово'),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

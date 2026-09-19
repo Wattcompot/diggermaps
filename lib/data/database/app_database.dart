@@ -24,7 +24,7 @@ class AppDatabase {
 
     return await openDatabase(
       path,
-      version: 12,
+      version: 13,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -48,6 +48,7 @@ class AppDatabase {
         marker_shape TEXT NOT NULL DEFAULT 'pin',
         marker_size REAL NOT NULL DEFAULT 42,
         marker_group TEXT NOT NULL DEFAULT 'Общее',
+        media_json TEXT NOT NULL DEFAULT '[]',
         visible INTEGER NOT NULL DEFAULT 1,
         created_at $textType
       )
@@ -353,6 +354,22 @@ class AppDatabase {
       if (!trackColumns.contains('segments_json')) {
         await db.execute(
           "ALTER TABLE tracks ADD COLUMN segments_json TEXT NOT NULL DEFAULT '[]'",
+        );
+      }
+    }
+    if (oldVersion < 13) {
+      await migrateMarkerMedia(db);
+    }
+  }
+
+  /// Both historical marker table names remain supported.
+  static Future<void> migrateMarkerMedia(DatabaseExecutor db) async {
+    for (final table in const ['user_markers', 'markers']) {
+      final columns = await db.rawQuery('PRAGMA table_info($table)');
+      if (columns.isNotEmpty &&
+          !columns.any((column) => column['name'] == 'media_json')) {
+        await db.execute(
+          "ALTER TABLE $table ADD COLUMN media_json TEXT NOT NULL DEFAULT '[]'",
         );
       }
     }

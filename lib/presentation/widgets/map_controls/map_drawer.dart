@@ -5,6 +5,7 @@ import '../../../data/models/drawing.dart';
 import '../../../data/models/track.dart';
 import '../../../data/models/user_marker.dart';
 import '../../../theme/app_theme.dart';
+import '../app_scroll.dart';
 
 class MapDrawer extends StatelessWidget {
   const MapDrawer({
@@ -29,6 +30,11 @@ class MapDrawer extends StatelessWidget {
   final List<Drawing> drawings;
   final List<Track> tracks;
   final int importedCount;
+
+  /// Принимается для совместимости с вызывающей стороной (`map_screen`).
+  ///
+  /// В подписи «Мои карты» показывается только динамический [importedCount],
+  /// поэтому значение не отображается: без миграции БД и правок других разделов.
   final int customCount;
   final VoidCallback onMyObjectsTap;
   final VoidCallback onMyMapsTap;
@@ -62,6 +68,60 @@ class MapDrawer extends StatelessWidget {
             ? user!.email!.trim()
             : 'Пользователь';
     final photoUrl = user?.photoURL?.trim();
+
+    final List<Widget> navItems = <Widget>[
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 14, 16, 4),
+        child: Text(
+          'Навигация',
+          style: theme.textTheme.labelLarge?.copyWith(color: muted),
+        ),
+      ),
+      ListTile(
+        leading: const Icon(Icons.layers_outlined),
+        title: const Text('Мои объекты'),
+        subtitle: Text(
+          '${markers.length + drawings.length + tracks.length} объектов',
+        ),
+        onTap: () => _closeThen(context, onMyObjectsTap),
+      ),
+      ListTile(
+        leading: const Icon(Icons.map_outlined),
+        title: const Text('Мои карты'),
+        subtitle: Text('$importedCount импортированных'),
+        onTap: () => _closeThen(context, onMyMapsTap),
+      ),
+      ListTile(
+        enabled: false,
+        leading: Icon(Icons.groups_outlined, color: muted),
+        title: Text('Команды', style: TextStyle(color: muted)),
+        trailing: Icon(Icons.lock_outline, color: muted, size: 19),
+      ),
+      ExpansionTile(
+        leading: const Icon(Icons.support_agent_outlined),
+        title: const Text('Поддержка'),
+        children: <Widget>[
+          ListTile(
+            contentPadding: const EdgeInsets.only(left: 72, right: 16),
+            leading: const Icon(Icons.mail_outline, size: 20),
+            title: const Text('Написать разработчикам'),
+            onTap: onSupportEmailTap,
+          ),
+          ListTile(
+            contentPadding: const EdgeInsets.only(left: 72, right: 16),
+            leading: const Icon(Icons.public, size: 20),
+            title: const Text('Сайт'),
+            onTap: onSupportSiteTap,
+          ),
+          ListTile(
+            contentPadding: const EdgeInsets.only(left: 72, right: 16),
+            leading: const Icon(Icons.menu_book_outlined, size: 20),
+            title: const Text('Инструкция'),
+            onTap: onSupportDocsTap,
+          ),
+        ],
+      ),
+    ];
 
     return Drawer(
       child: Column(
@@ -166,67 +226,10 @@ class MapDrawer extends StatelessWidget {
           ),
           const Divider(height: 1),
           Expanded(
-            child: ListView(
+            child: AppScrollView(
               padding: EdgeInsets.zero,
-              children: <Widget>[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 16, 4),
-                  child: Text(
-                    'Навигация',
-                    style: theme.textTheme.labelLarge?.copyWith(color: muted),
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.layers_outlined),
-                  title: const Text('Мои объекты'),
-                  subtitle: Text(
-                    '${markers.length + drawings.length + tracks.length} объектов',
-                  ),
-                  onTap: () => _closeThen(context, onMyObjectsTap),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.map_outlined),
-                  title: const Text('Мои карты'),
-                  subtitle: Text(
-                    '$importedCount импортированных, '
-                    '$customCount пользовательских',
-                  ),
-                  onTap: () => _closeThen(context, onMyMapsTap),
-                ),
-                ListTile(
-                  enabled: false,
-                  leading: Icon(Icons.groups_outlined, color: muted),
-                  title: Text('Команды', style: TextStyle(color: muted)),
-                  trailing: Icon(Icons.lock_outline, color: muted, size: 19),
-                ),
-                ExpansionTile(
-                  leading: const Icon(Icons.support_agent_outlined),
-                  title: const Text('Поддержка'),
-                  children: <Widget>[
-                    ListTile(
-                      contentPadding:
-                          const EdgeInsets.only(left: 72, right: 16),
-                      leading: const Icon(Icons.mail_outline, size: 20),
-                      title: const Text('Написать разработчикам'),
-                      onTap: onSupportEmailTap,
-                    ),
-                    ListTile(
-                      contentPadding:
-                          const EdgeInsets.only(left: 72, right: 16),
-                      leading: const Icon(Icons.public, size: 20),
-                      title: const Text('Сайт'),
-                      onTap: onSupportSiteTap,
-                    ),
-                    ListTile(
-                      contentPadding:
-                          const EdgeInsets.only(left: 72, right: 16),
-                      leading: const Icon(Icons.menu_book_outlined, size: 20),
-                      title: const Text('Инструкция'),
-                      onTap: onSupportDocsTap,
-                    ),
-                  ],
-                ),
-              ],
+              itemCount: navItems.length,
+              itemBuilder: (context, index) => navItems[index],
             ),
           ),
           const Divider(height: 1),

@@ -1,76 +1,77 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
-class BottomActions extends StatelessWidget {
-  const BottomActions({
+/// Кнопки режима прицеливания («Отмена» / «Готово»).
+///
+/// Содержимое без позиционирования: размещением занимается [MapBottomDock]
+/// (или legacy-режим [BottomActions]).
+class AimActions extends StatelessWidget {
+  const AimActions({
+    super.key,
+    required this.onCancel,
+    required this.onDone,
+  });
+
+  final VoidCallback onCancel;
+  final VoidCallback onDone;
+
+  @override
+  Widget build(BuildContext context) => Align(
+        alignment: Alignment.center,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 250, minHeight: 48),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: onCancel,
+                  icon: const Icon(Icons.close),
+                  label: const FittedBox(child: Text('Отмена')),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: onDone,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFA67B5B),
+                    foregroundColor: Colors.white,
+                  ),
+                  icon: const Icon(Icons.check),
+                  label: const FittedBox(child: Text('Готово')),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+/// Экшен-рейл по умолчанию: GPS, «Сдвиг», «Карты».
+///
+/// Содержимое без позиционирования: размещением занимается [MapBottomDock]
+/// (или legacy-режим [BottomActions]).
+class ActionRail extends StatelessWidget {
+  const ActionRail({
     super.key,
     required this.following,
     required this.recording,
-    required this.aiming,
     required this.shiftEnabled,
     required this.onGpsPressed,
     required this.onGpsLongPress,
     required this.onShiftPressed,
     required this.onMapsPressed,
-    required this.onAimCancel,
-    required this.onAimDone,
   });
 
   final bool following;
   final bool recording;
-  final bool aiming;
   final bool shiftEnabled;
   final VoidCallback onGpsPressed;
   final VoidCallback onGpsLongPress;
   final VoidCallback onShiftPressed;
   final VoidCallback onMapsPressed;
-  final VoidCallback onAimCancel;
-  final VoidCallback onAimDone;
 
   @override
-  Widget build(BuildContext context) {
-    if (aiming) {
-      return Positioned(
-        left: 16,
-        right: 16,
-        bottom: MediaQuery.paddingOf(context).bottom + 16,
-        child: Align(
-          alignment: Alignment.bottomCenter,
-          child: SizedBox(
-            width: math.min(250, MediaQuery.sizeOf(context).width - 96),
-            height: 48,
-            child: Row(
-              children: <Widget>[
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: onAimCancel,
-                    icon: const Icon(Icons.close),
-                    label: const Text('Отмена'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: onAimDone,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFA67B5B),
-                      foregroundColor: Colors.white,
-                    ),
-                    icon: const Icon(Icons.check),
-                    label: const Text('Готово'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-    return Positioned(
-      right: 16,
-      bottom: MediaQuery.paddingOf(context).bottom + 16,
-      child: Column(
+  Widget build(BuildContext context) => Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           _RoundAction(
@@ -93,7 +94,72 @@ class BottomActions extends StatelessWidget {
             onPressed: onMapsPressed,
           ),
         ],
-      ),
+      );
+}
+
+/// Кнопки карты внизу: либо рейл действий, либо кнопки прицеливания.
+///
+/// При `embedded == false` (по умолчанию) виджет позиционирует себя сам —
+/// прежнее поведение, совместимое с текущим вызовом из `MapScreen`. При
+/// `embedded == true` возвращается только содержимое ([ActionRail] или
+/// [AimActions]) для размещения внутри [MapBottomDock].
+class BottomActions extends StatelessWidget {
+  const BottomActions({
+    super.key,
+    required this.following,
+    required this.recording,
+    required this.aiming,
+    required this.shiftEnabled,
+    required this.onGpsPressed,
+    required this.onGpsLongPress,
+    required this.onShiftPressed,
+    required this.onMapsPressed,
+    required this.onAimCancel,
+    required this.onAimDone,
+    this.embedded = false,
+  });
+
+  final bool following;
+  final bool recording;
+  final bool aiming;
+  final bool shiftEnabled;
+  final VoidCallback onGpsPressed;
+  final VoidCallback onGpsLongPress;
+  final VoidCallback onShiftPressed;
+  final VoidCallback onMapsPressed;
+  final VoidCallback onAimCancel;
+  final VoidCallback onAimDone;
+
+  /// Не позиционировать себя самостоятельно (для [MapBottomDock]).
+  final bool embedded;
+
+  @override
+  Widget build(BuildContext context) {
+    if (aiming) {
+      final actions = AimActions(onCancel: onAimCancel, onDone: onAimDone);
+      if (embedded) return actions;
+      return Positioned(
+        left: 16,
+        right: 16,
+        bottom: MediaQuery.paddingOf(context).bottom + 16,
+        child: actions,
+      );
+    }
+
+    final rail = ActionRail(
+      following: following,
+      recording: recording,
+      shiftEnabled: shiftEnabled,
+      onGpsPressed: onGpsPressed,
+      onGpsLongPress: onGpsLongPress,
+      onShiftPressed: onShiftPressed,
+      onMapsPressed: onMapsPressed,
+    );
+    if (embedded) return rail;
+    return Positioned(
+      right: 16,
+      bottom: MediaQuery.paddingOf(context).bottom + 16,
+      child: rail,
     );
   }
 }

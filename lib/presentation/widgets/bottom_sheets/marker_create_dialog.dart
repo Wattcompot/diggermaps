@@ -1,6 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:latlong2/latlong.dart';
+
+import '../../../data/models/marker_media.dart';
+import '../../../services/media/marker_media_service.dart';
+import '../media/marker_media_section.dart';
+import '../poi/marker_appearance_button.dart';
+import 'marker_style_picker_sheet.dart';
 
 class MarkerCreateSelection {
   const MarkerCreateSelection({
@@ -10,6 +18,7 @@ class MarkerCreateSelection {
     required this.colorHex,
     required this.shape,
     required this.size,
+    this.media = const <MarkerMedia>[],
   });
 
   final String name;
@@ -18,6 +27,12 @@ class MarkerCreateSelection {
   final String colorHex;
   final String shape;
   final double size;
+
+  /// Вложения, добавленные прямо при создании метки.
+  ///
+  /// Это ссылки на файлы в папке приложения; вызывающий код переносит их в
+  /// `UserMarker.media` (см. интеграционный сниппет для `map_screen.dart`).
+  final List<MarkerMedia> media;
 }
 
 class MarkerCreateDialog extends StatefulWidget {
@@ -25,6 +40,7 @@ class MarkerCreateDialog extends StatefulWidget {
     super.key,
     required this.point,
     required this.previewBuilder,
+    this.mediaService,
   });
 
   static const _speechChannel = MethodChannel('digger_maps/speech');
@@ -33,17 +49,22 @@ class MarkerCreateDialog extends StatefulWidget {
   final Widget Function(String shape, String colorHex, double size)
       previewBuilder;
 
+  /// Точка внедрения (тесты или общий сервис у вызывающего экрана).
+  final MarkerMediaService? mediaService;
+
   static Future<MarkerCreateSelection?> show(
     BuildContext context, {
     required LatLng point,
     required Widget Function(String shape, String colorHex, double size)
         previewBuilder,
+    MarkerMediaService? mediaService,
   }) {
     return showDialog<MarkerCreateSelection>(
       context: context,
       builder: (_) => MarkerCreateDialog(
         point: point,
         previewBuilder: previewBuilder,
+        mediaService: mediaService,
       ),
     );
   }
@@ -53,25 +74,6 @@ class MarkerCreateDialog extends StatefulWidget {
 }
 
 class _MarkerCreateDialogState extends State<MarkerCreateDialog> {
-  static const _colors = <String>[
-    '#FF0000',
-    '#A67B5B',
-    '#00FF00',
-    '#0000FF',
-    '#FFFF00',
-    '#FF00FF',
-    '#00FFFF',
-    '#000000',
-    '#FFFFFF',
-  ];
-  static const _shapes = <(String, IconData)>[
-    ('square', Icons.square_outlined),
-    ('triangle', Icons.change_history),
-    ('circle', Icons.circle_outlined),
-    ('pin', Icons.location_pin),
-    ('star', Icons.more_horiz),
-  ];
-
   final _nameController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _groupController = TextEditingController(text: 'Общее');
@@ -80,12 +82,48 @@ class _MarkerCreateDialogState extends State<MarkerCreateDialog> {
   double _selectedSize = 42;
   String? _nameError;
 
+  late final MarkerMediaService _mediaService;
+  late final bool _ownsMediaService;
+  final Set<String> _sessionRefs = <String>{};
+  List<MarkerMedia> _media = const <MarkerMedia>[];
+
+  /// true только когда метка создана: с этого момента файлы принадлежат ей.
+  bool _committed = false;
+  bool _saving = false;
+  final _mediaKey = GlobalKey<MarkerMediaSectionState>();
+
+  @override
+  void initState() {
+    super.initState();
+    _mediaService = widget.mediaService ?? MarkerMediaService();
+    _ownsMediaService = widget.mediaService == null;
+  }
+
   @override
   void dispose() {
     _nameController.dispose();
     _descriptionController.dispose();
     _groupController.dispose();
+    if (!_committed) {
+      // Диалог закрыт без создания метки: удаляем только файлы этой сессии.
+      unawaited(_discardDrafts());
+    }
+    if (_ownsMediaService) unawaited(_mediaService.dispose());
     super.dispose();
+  }
+
+  Future<void> _discardDrafts() async {
+    try {
+      await _mediaService.store.discardDrafts(
+        originalRefs: const <String>{},
+        currentRefs: <String>{
+          ..._sessionRefs,
+          ..._media.map((item) => item.fileRef),
+        },
+      );
+    } catch (_) {
+      // Уборка черновиков не должна ломать закрытие диалога.
+    }
   }
 
   void _showMessage(String message) {
@@ -123,13 +161,34 @@ class _MarkerCreateDialogState extends State<MarkerCreateDialog> {
     }
   }
 
-  void _save() {
+  Future<void> _editAppearance() async {
+    final style = await MarkerStylePickerSheet.show(context,
+        point: widget.point,
+        initialShape: _selectedShape,
+        initialColor: _selectedColor,
+        initialSize: _selectedSize,
+        previewBuilder: widget.previewBuilder);
+    if (!mounted || style == null) return;
+    setState(() {
+      _selectedShape = style.shape;
+      _selectedColor = style.colorHex;
+      _selectedSize = style.size;
+    });
+  }
+
+  Future<void> _save() async {
     final name = _nameController.text.trim();
     if (name.isEmpty) {
       setState(() => _nameError = 'Введите название');
       return;
     }
+    if (_saving) return;
+    _saving = true;
+    final ready = await _mediaKey.currentState?.prepareToSave() ?? true;
+    _saving = false;
+    if (!mounted || !ready) return;
     final group = _groupController.text.trim();
+    _committed = true;
     Navigator.pop(
       context,
       MarkerCreateSelection(
@@ -139,6 +198,7 @@ class _MarkerCreateDialogState extends State<MarkerCreateDialog> {
         colorHex: _selectedColor,
         shape: _selectedShape,
         size: _selectedSize,
+        media: List<MarkerMedia>.unmodifiable(_media),
       ),
     );
   }
@@ -198,76 +258,29 @@ class _MarkerCreateDialogState extends State<MarkerCreateDialog> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: _descriptionController,
-                  decoration: const InputDecoration(labelText: 'Описание'),
+                MarkerMediaSection(
+                  key: _mediaKey,
+                  descriptionController: _descriptionController,
+                  media: _media,
+                  service: _mediaService,
+                  onChanged: (media) => setState(() => _media = media),
+                  onDraftCreated: _sessionRefs.add,
                 ),
                 const SizedBox(height: 12),
-                const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Форма метки'),
-                ),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: _shapes.map((item) {
-                    final selected = _selectedShape == item.$1;
-                    return InkWell(
-                      onTap: () => setState(() => _selectedShape = item.$1),
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: selected
-                                ? const Color(0xFFA67B5B)
-                                : Colors.transparent,
-                            width: 2,
-                          ),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(item.$2),
-                      ),
-                    );
-                  }).toList(growable: false),
-                ),
-                Slider(
-                  value: _selectedSize,
-                  min: 24,
-                  max: 72,
-                  label: 'Размер ${_selectedSize.round()}',
-                  activeColor: const Color(0xFFA67B5B),
-                  thumbColor: const Color(0xFFA67B5B),
-                  onChanged: (value) => setState(() => _selectedSize = value),
-                ),
-                const SizedBox(height: 12),
-                const Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Цвет метки'),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: _colors.map((color) {
-                    return GestureDetector(
-                      onTap: () => setState(() => _selectedColor = color),
-                      child: Container(
-                        width: 32,
-                        height: 32,
-                        decoration: BoxDecoration(
-                          color: Color(
-                            int.parse(color.replaceFirst('#', '0xFF')),
-                          ),
-                          border: Border.all(
-                            color: _selectedColor == color
-                                ? const Color(0xFFA67B5B)
-                                : Colors.grey,
-                            width: 2,
-                          ),
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    );
-                  }).toList(growable: false),
-                ),
+                Row(children: <Widget>[
+                  MarkerAppearanceButton(
+                      shape: _selectedShape,
+                      colorHex: _selectedColor,
+                      onTap: _editAppearance),
+                  const SizedBox(width: 12),
+                  Expanded(
+                      child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Внешний вид'),
+                          subtitle: const Text('Форма, цвет и размер'),
+                          trailing: const Icon(Icons.chevron_right),
+                          onTap: _editAppearance)),
+                ]),
                 const SizedBox(height: 12),
                 TextField(
                   controller: _groupController,

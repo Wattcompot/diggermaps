@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../../data/models/drawing.dart';
+import '../../providers/drawing_controller.dart';
 import '../object_bottom_sheet.dart';
 
 class DrawingBottomSheet extends StatefulWidget {
@@ -95,6 +96,12 @@ class _DrawingBottomSheetState extends State<DrawingBottomSheet> {
               onColorSelected: (color) => setState(
                 () => _drawing = _drawing.copyWith(color: color.toARGB32()),
               ),
+              strokeWidth: _drawing.strokeWidth,
+              onStrokeWidthChanged: (value) => setState(
+                () => _drawing = _drawing.copyWith(strokeWidth: value),
+              ),
+              minStrokeWidth: DrawingController.minStrokeWidth,
+              maxStrokeWidth: DrawingController.maxStrokeWidth,
               visible: _drawing.visible,
               onVisibilityChanged: (value) => setState(
                 () => _drawing = _drawing.copyWith(visible: value),

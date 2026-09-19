@@ -5,12 +5,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_mbtiles/flutter_map_mbtiles.dart';
+import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:mbtiles/mbtiles.dart';
 
 import '../data/models/imported_map.dart';
 import '../data/repositories/custom_map_repository.dart';
 import '../services/tile_cache/network_tile_provider_factory.dart';
+import '../services/tile_cache/retained_tile_provider.dart';
 import 'constants/map_layers.dart';
 import 'map_formats/jnx_decoder.dart';
 import 'map_formats/jnx_tile_provider.dart';
@@ -38,7 +40,37 @@ class MapTileProviderFactory {
   final Map<String, OziMapCalibration> _calibrationCache =
       <String, OziMapCalibration>{};
   final Map<String, JnxDecoder> _jnxCache = <String, JnxDecoder>{};
+  final Map<String, RetainedTileProvider> _baseProviders =
+      <String, RetainedTileProvider>{};
   bool _disposed = false;
+
+  /// Провайдер базового тайлового слоя.
+  ///
+  /// Создаётся и кэшируется здесь, а не в `build()` слоя: [TileLayer] вызывает
+  /// `tileProvider.dispose()` при удалении своего состояния (смена ключа слоя,
+  /// выключение слоя) — а провайдер с прогретым кэшем FMTC должен это
+  /// переживать. Поэтому наружу отдаётся [RetainedTileProvider], а сам FMTC
+  /// провайдер живёт до [dispose] фабрики.
+  TileProvider baseTileProvider(String storeName) {
+    if (kIsWeb) {
+      return _baseProviders.putIfAbsent(
+        'network',
+        () => RetainedTileProvider(createNetworkTileProvider()),
+      );
+    }
+    return _baseProviders.putIfAbsent(
+      storeName,
+      () => RetainedTileProvider(
+        FMTCTileProvider(
+          stores: <String, BrowseStoreStrategy>{
+            storeName: BrowseStoreStrategy.readUpdateCreate,
+          },
+          loadingStrategy: BrowseLoadingStrategy.cacheFirst,
+          recordHitsAndMisses: false,
+        ),
+      ),
+    );
+  }
 
   MbTiles mbtiles(String path) {
     if (kIsWeb) throw UnsupportedError('MBTiles not supported on Web');
@@ -269,6 +301,12 @@ class MapTileProviderFactory {
 
   void dispose() {
     _disposed = true;
+    for (final provider in _baseProviders.values) {
+      // FMTC освобождает ресурсы асинхронно; ждать здесь нельзя, но и терять
+      // провайдера с прогретым кэшем при переключении слоя — нельзя тоже.
+      provider.inner.dispose();
+    }
+    _baseProviders.clear();
     for (final value in _mbtilesCache.values) {
       value.dispose();
     }
