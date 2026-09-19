@@ -2,31 +2,35 @@ import 'package:flutter/material.dart';
 
 import '../../providers/track_recording_controller.dart';
 
-class RecordingOverlay extends StatefulWidget {
-  const RecordingOverlay({
-    super.key,
-    required this.controller,
-    required this.onStop,
-    required this.onCancel,
-    required this.spectralVisible,
+/// Анимация появления/скрытия панели записи (280 мс, fade + slide).
+///
+/// Раньше это был один `RecordingOverlay` с двумя `Positioned` внутри. Теперь
+/// статистика и контролы записи — самостоятельное содержимое, но анимация
+/// осталась той же, поэтому она вынесена в общий переход.
+class _RecordingPanelTransition extends StatefulWidget {
+  const _RecordingPanelTransition({
+    required this.visible,
+    required this.childBuilder,
+    this.pulse = false,
   });
 
-  final TrackRecordingController controller;
-  final VoidCallback onStop;
-  final VoidCallback onCancel;
-  final bool spectralVisible;
+  final bool visible;
+  final bool pulse;
+  final Widget Function(BuildContext context, Animation<double> pulse)
+      childBuilder;
 
   @override
-  State<RecordingOverlay> createState() => _RecordingOverlayState();
+  State<_RecordingPanelTransition> createState() =>
+      _RecordingPanelTransitionState();
 }
 
-class _RecordingOverlayState extends State<RecordingOverlay>
+class _RecordingPanelTransitionState extends State<_RecordingPanelTransition>
     with TickerProviderStateMixin {
   late final AnimationController _panelController;
   late final AnimationController _pulseController;
   late final Animation<double> _opacity;
-  late final Animation<double> _pulse;
   late final Animation<Offset> _slide;
+  late final Animation<double> _pulse;
 
   @override
   void initState() {
@@ -45,36 +49,44 @@ class _RecordingOverlayState extends State<RecordingOverlay>
     _pulse = Tween<double>(begin: 0.3, end: 1).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
-    widget.controller.addListener(_syncAnimation);
+    _panelController.addStatusListener(_handleStatus);
     _syncAnimation();
   }
 
+  /// По завершении прямой/обратной анимации перестраиваемся: без этого
+  /// свернувшаяся панель осталась бы в дереве до следующего внешнего события.
+  void _handleStatus(AnimationStatus status) {
+    if (!mounted) return;
+    if (status == AnimationStatus.dismissed ||
+        status == AnimationStatus.completed) {
+      setState(() {});
+    }
+  }
+
   @override
-  void didUpdateWidget(covariant RecordingOverlay oldWidget) {
+  void didUpdateWidget(covariant _RecordingPanelTransition oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller != widget.controller) {
-      oldWidget.controller.removeListener(_syncAnimation);
-      widget.controller.addListener(_syncAnimation);
+    if (oldWidget.visible != widget.visible ||
+        oldWidget.pulse != widget.pulse) {
       _syncAnimation();
     }
   }
 
   void _syncAnimation() {
-    if (widget.controller.isRecording) {
+    if (widget.visible) {
       _panelController.forward();
-      if (!_pulseController.isAnimating) {
+      if (widget.pulse && !_pulseController.isAnimating) {
         _pulseController.repeat(reverse: true);
       }
     } else {
       _panelController.reverse();
       _pulseController.stop();
     }
-    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
-    widget.controller.removeListener(_syncAnimation);
+    _panelController.removeStatusListener(_handleStatus);
     _panelController.dispose();
     _pulseController.dispose();
     super.dispose();
@@ -82,40 +94,157 @@ class _RecordingOverlayState extends State<RecordingOverlay>
 
   @override
   Widget build(BuildContext context) {
-    if (!widget.controller.isRecording && _panelController.isDismissed) {
+    if (!widget.visible && _panelController.isDismissed) {
       return const SizedBox.shrink();
     }
+    return FadeTransition(
+      opacity: _opacity,
+      child: SlideTransition(
+        position: _slide,
+        child: widget.childBuilder(context, _pulse),
+      ),
+    );
+  }
+}
+
+/// Карточка статистики записи трека (содержимое, без позиционирования).
+class RecordingStatsCard extends StatelessWidget {
+  const RecordingStatsCard({
+    super.key,
+    required this.isRecording,
+    required this.isPaused,
+    required this.speedKmh,
+    required this.distanceKm,
+  });
+
+  final bool isRecording;
+  final bool isPaused;
+  final double speedKmh;
+  final double distanceKm;
+
+  @override
+  Widget build(BuildContext context) => _RecordingPanelTransition(
+        visible: isRecording,
+        pulse: true,
+        childBuilder: (context, pulse) => _RecordingStatsContent(
+          isPaused: isPaused,
+          speedKmh: speedKmh,
+          distanceKm: distanceKm,
+          pulse: pulse,
+        ),
+      );
+}
+
+/// Контролы записи трека (содержимое, без позиционирования).
+class RecordingControlsPanel extends StatelessWidget {
+  const RecordingControlsPanel({
+    super.key,
+    required this.isRecording,
+    required this.isPaused,
+    required this.onStop,
+    required this.onTogglePause,
+    required this.onCancel,
+  });
+
+  final bool isRecording;
+  final bool isPaused;
+  final VoidCallback onStop;
+  final VoidCallback onTogglePause;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) => _RecordingPanelTransition(
+        visible: isRecording,
+        childBuilder: (context, _) => _RecordingControlsContent(
+          isPaused: isPaused,
+          onStop: onStop,
+          onTogglePause: onTogglePause,
+          onCancel: onCancel,
+        ),
+      );
+}
+
+/// Карточка статистики записи, привязанная к контроллеру.
+class TrackRecordingStatsCard extends StatelessWidget {
+  const TrackRecordingStatsCard({super.key, required this.controller});
+
+  final TrackRecordingController controller;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) => RecordingStatsCard(
+          isRecording: controller.isRecording,
+          isPaused: controller.isPaused,
+          speedKmh: controller.currentSpeed,
+          distanceKm: controller.distance / 1000,
+        ),
+      );
+}
+
+/// Контролы записи, привязанные к контроллеру.
+class TrackRecordingControlsPanel extends StatelessWidget {
+  const TrackRecordingControlsPanel({
+    super.key,
+    required this.controller,
+    required this.onStop,
+    required this.onCancel,
+  });
+
+  final TrackRecordingController controller;
+  final VoidCallback onStop;
+  final VoidCallback onCancel;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) => RecordingControlsPanel(
+          isRecording: controller.isRecording,
+          isPaused: controller.isPaused,
+          onStop: onStop,
+          onTogglePause: controller.togglePause,
+          onCancel: onCancel,
+        ),
+      );
+}
+
+/// Прежний оверлей записи: сам позиционирует статистику и контролы.
+///
+/// Оставлен для совместимости с текущим вызовом из `MapScreen`. Для
+/// `MapBottomDock` используйте [TrackRecordingStatsCard] (слот `stats`) и
+/// [TrackRecordingControlsPanel] (в `panels`).
+class RecordingOverlay extends StatelessWidget {
+  const RecordingOverlay({
+    super.key,
+    required this.controller,
+    required this.onStop,
+    required this.onCancel,
+    required this.spectralVisible,
+  });
+
+  final TrackRecordingController controller;
+  final VoidCallback onStop;
+  final VoidCallback onCancel;
+  final bool spectralVisible;
+
+  @override
+  Widget build(BuildContext context) {
+    final padding = MediaQuery.paddingOf(context);
     return Stack(
       children: <Widget>[
         Positioned(
-          top: MediaQuery.paddingOf(context).top + 150,
+          top: padding.top + 150,
           right: 16,
-          child: FadeTransition(
-            opacity: _opacity,
-            child: SlideTransition(
-              position: _slide,
-              child: _RecordingStats(
-                controller: widget.controller,
-                pulse: _pulse,
-              ),
-            ),
-          ),
+          child: TrackRecordingStatsCard(controller: controller),
         ),
         Positioned(
           left: 16,
           right: 88,
-          bottom: MediaQuery.paddingOf(context).bottom +
-              (widget.spectralVisible ? 72 : 16),
-          child: FadeTransition(
-            opacity: _opacity,
-            child: SlideTransition(
-              position: _slide,
-              child: _RecordingControls(
-                controller: widget.controller,
-                onStop: widget.onStop,
-                onCancel: widget.onCancel,
-              ),
-            ),
+          bottom: padding.bottom + (spectralVisible ? 72 : 16),
+          child: TrackRecordingControlsPanel(
+            controller: controller,
+            onStop: onStop,
+            onCancel: onCancel,
           ),
         ),
       ],
@@ -123,16 +252,22 @@ class _RecordingOverlayState extends State<RecordingOverlay>
   }
 }
 
-class _RecordingStats extends StatelessWidget {
-  const _RecordingStats({required this.controller, required this.pulse});
+class _RecordingStatsContent extends StatelessWidget {
+  const _RecordingStatsContent({
+    required this.isPaused,
+    required this.speedKmh,
+    required this.distanceKm,
+    required this.pulse,
+  });
 
-  final TrackRecordingController controller;
+  final bool isPaused;
+  final double speedKmh;
+  final double distanceKm;
   final Animation<double> pulse;
 
   @override
   Widget build(BuildContext context) => Container(
         width: 206,
-        constraints: const BoxConstraints(maxHeight: 110),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.84),
@@ -155,14 +290,16 @@ class _RecordingStats extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  controller.isPaused
-                      ? 'Запись приостановлена'
-                      : 'Идёт запись трека',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
+                Expanded(
+                  child: Text(
+                    isPaused ? 'Запись приостановлена' : 'Идёт запись трека',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ],
@@ -174,7 +311,7 @@ class _RecordingStats extends StatelessWidget {
                   child: _Metric(
                     icon: Icons.speed,
                     iconColor: Colors.orange,
-                    value: '${controller.currentSpeed.toStringAsFixed(1)} км/ч',
+                    value: '${speedKmh.toStringAsFixed(1)} км/ч',
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -182,8 +319,7 @@ class _RecordingStats extends StatelessWidget {
                   child: _Metric(
                     icon: Icons.straighten,
                     iconColor: Colors.blue,
-                    value:
-                        '${(controller.distance / 1000).toStringAsFixed(2)} км',
+                    value: '${distanceKm.toStringAsFixed(2)} км',
                   ),
                 ),
               ],
@@ -193,20 +329,22 @@ class _RecordingStats extends StatelessWidget {
       );
 }
 
-class _RecordingControls extends StatelessWidget {
-  const _RecordingControls({
-    required this.controller,
+class _RecordingControlsContent extends StatelessWidget {
+  const _RecordingControlsContent({
+    required this.isPaused,
     required this.onStop,
+    required this.onTogglePause,
     required this.onCancel,
   });
 
-  final TrackRecordingController controller;
+  final bool isPaused;
   final VoidCallback onStop;
+  final VoidCallback onTogglePause;
   final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) => Container(
-        height: 64,
+        constraints: const BoxConstraints(minHeight: 64),
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.84),
@@ -220,6 +358,7 @@ class _RecordingControls extends StatelessWidget {
                 style: FilledButton.styleFrom(
                   backgroundColor: Colors.red.shade700,
                   foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
                 ),
                 icon: const Icon(Icons.stop, size: 18),
                 label: const FittedBox(child: Text('Стоп')),
@@ -228,20 +367,20 @@ class _RecordingControls extends StatelessWidget {
             const SizedBox(width: 8),
             Expanded(
               child: FilledButton.icon(
-                onPressed: controller.togglePause,
+                onPressed: onTogglePause,
                 style: FilledButton.styleFrom(
-                  backgroundColor: controller.isPaused
+                  backgroundColor: isPaused
                       ? const Color(0xFFA67B5B)
                       : Colors.blueGrey.shade700,
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
                 ),
                 icon: Icon(
-                  controller.isPaused ? Icons.play_arrow : Icons.pause,
+                  isPaused ? Icons.play_arrow : Icons.pause,
                   size: 18,
                 ),
                 label: FittedBox(
-                  child: Text(controller.isPaused ? 'Продолжить' : 'Пауза'),
+                  child: Text(isPaused ? 'Продолжить' : 'Пауза'),
                 ),
               ),
             ),
@@ -252,6 +391,7 @@ class _RecordingControls extends StatelessWidget {
                 style: FilledButton.styleFrom(
                   backgroundColor: Colors.grey.shade700,
                   foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
                 ),
                 child: const FittedBox(child: Text('Отмена')),
               ),

@@ -59,6 +59,32 @@ class MainActivity : FlutterActivity() {
                 startActivityForResult(intent, speechRequestCode)
             }
 
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "digger_maps/media")
+            .setMethodCallHandler { call, result ->
+                if (call.method != "openVideo") {
+                    result.notImplemented()
+                    return@setMethodCallHandler
+                }
+                try {
+                    val file = java.io.File(call.argument<String>("path").orEmpty()).canonicalFile
+                    val root = java.io.File(dataDir, "app_flutter/marker_media").canonicalFile
+                    require(file.isFile && file.path.startsWith(root.path + java.io.File.separator))
+                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                        this, "$packageName.marker_media", file
+                    )
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, call.argument<String>("mimeType") ?: "video/*")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(intent)
+                    result.success(null)
+                } catch (error: android.content.ActivityNotFoundException) {
+                    result.error("no_player", "Не найдено приложение для просмотра видео", null)
+                } catch (error: Exception) {
+                    result.error("video_unavailable", "Не удалось открыть видео", null)
+                }
+            }
+
         configureOzfTileReader(flutterEngine)
     }
 

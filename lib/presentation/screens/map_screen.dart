@@ -27,6 +27,8 @@ import 'my_maps_screen.dart';
 import 'my_objects_screen.dart';
 import 'direction_screen.dart';
 import '../widgets/crosshair_overlay.dart';
+import '../widgets/app_notifications.dart';
+import '../widgets/map_controls/map_bottom_dock.dart';
 import '../widgets/confirm_object_delete.dart';
 import '../providers/drawing_controller.dart';
 import '../providers/map_aiming_controller.dart';
@@ -66,6 +68,8 @@ import '../widgets/map_controls/spectral_status_chip.dart';
 import '../widgets/map_controls/top_bar.dart';
 import '../widgets/poi/map_layer_stack.dart';
 import '../widgets/poi/marker_shape.dart';
+import '../widgets/poi/object_preview_card.dart';
+import '../widgets/poi/object_preview_layer.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -75,7 +79,8 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
-  static const _initialPosition = LatLng(55.751244, 37.618423);
+  // Обзор мира до восстановления камеры или первого валидного GPS-фикса.
+  static const _initialPosition = LatLng(0, 0);
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final MapController _mapController = MapController();
   late final TrackRecordingController _trackRecordingController;
@@ -114,6 +119,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   int? _selectedMarkerId;
   int? _selectedTrackId;
   bool _objectModalSheetOpen = false;
+  final _objectPreview = ObjectPreviewController();
 
   StreamSubscription<MapEvent>? _mapEventSubscription;
   double _mapRotation = 0;
@@ -197,10 +203,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _initData() async {
     await _mapDataController.loadAll();
-    await _tryCenterOnStartup();
   }
-
-  Future<void> _tryCenterOnStartup() => _locationController.centerOnStartup();
 
   Future<void> _resetMapRotation() async {
     final start = _mapController.camera.rotation;
@@ -228,6 +231,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       controller.removeListener(_refreshScreen);
       controller.dispose();
     }
+    _objectPreview.dispose();
     _mapSearchController.dispose();
     _tileProviderFactory.dispose();
     _mapEventSubscription?.cancel();
@@ -243,17 +247,17 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.paused ||
+    // Камера, галерея и запрос разрешения временно уводят приложение в фон.
+    // Редактор и его черновик должны переживать это; запись останавливает
+    // собственный lifecycle-обработчик MarkerMediaSection.
+    if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
-      if (_objectModalSheetOpen && mounted) {
-        Navigator.of(context).maybePop();
-      }
-      _closeObjectDetailsSheets();
+      _locationController.flushCamera();
     }
   }
 
   void _closeObjectDetailsSheets() {
+    _objectPreview.hide();
     if (_objectModalSheetOpen && mounted) {
       Navigator.of(context).maybePop();
     }
@@ -323,13 +327,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             drawings: _mapDataController.myDrawings,
             temporaryDrawings: _mapDataController.temporaryDrawings,
             tracks: _mapDataController.myTracks,
+            previewController: _objectPreview,
             selectedMarkerId: _selectedMarkerId,
             selectedDrawingId: _selectedDrawingId,
             selectedTrackId: _selectedTrackId,
             followLocation: _locationController.followLocation,
             locationLayerEnabled: _locationController.locationLayerEnabled,
+            positionStream: _locationController.positionStream,
             metricUnits: _metricUnits,
-            initialCenter: _initialPosition,
+            initialCenter:
+                _locationController.savedCamera?.center ?? _initialPosition,
+            initialZoom: _locationController.savedCamera?.zoom ?? 2,
+            onMapReady: _locationController.restoreCameraOnReady,
             onTap: _handleMapTap,
             onPositionChanged: _handleMapPositionChanged,
             onPanStart: _drawingController.mode == MapDrawingMode.line
@@ -389,17 +398,35 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             const Positioned.fill(
               child: Center(child: CrosshairOverlay()),
             ),
-          _buildLeftPanel(),
-          RecordingOverlay(
-            controller: _trackRecordingController,
-            onStop: _stopTrackRecording,
-            onCancel: _cancelTrackRecording,
-            spectralVisible: _sentinelController.visible,
+          MapBottomDock(
+            aiming: _mapAimingController.isAiming,
+            leftPanel: _buildLeftPanel(),
+            stats:
+                TrackRecordingStatsCard(controller: _trackRecordingController),
+            primaryPanel: _calibrationController.isActive
+                ? CalibrationControls(
+                    controller: _calibrationController, embedded: true)
+                : _mapAimingController.isAiming
+                    ? _buildBottomActions(context)
+                    : null,
+            panels: <Widget>[
+              TrackRecordingControlsPanel(
+                controller: _trackRecordingController,
+                onStop: _stopTrackRecording,
+                onCancel: _cancelTrackRecording,
+              ),
+              AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: _sentinelController.visible
+                    ? _buildSpectralStatusChip()
+                    : const SizedBox.shrink(),
+              ),
+            ],
+            trailing: !_calibrationController.isActive &&
+                    !_mapAimingController.isAiming
+                ? _buildBottomActions(context)
+                : null,
           ),
-          if (!_calibrationController.isActive) _buildBottomActions(context),
-          if (_calibrationController.isActive)
-            CalibrationControls(controller: _calibrationController),
-          if (_sentinelController.visible) _buildSpectralStatusChip(),
           if (_wikimapiaController.isLoading)
             const Center(
               child: DecoratedBox(
@@ -426,6 +453,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Widget _buildLeftPanel() {
     return LeftPanel(
+      embedded: true,
       mapController: _mapController,
       rotation: _mapRotation,
       spectralActive: _sentinelController.visible,
@@ -442,7 +470,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Widget _buildSpectralStatusChip() {
     return SpectralStatusChip(
-      date: _sentinelController.date,
+      embedded: true,
+      date: _sentinelController.imageryDate ?? _sentinelController.date,
       cloudCoverage: _sentinelController.imageCloudCoverage,
       loading: _sentinelController.loading,
       onEdit: _showSentinelCalendar,
@@ -570,10 +599,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (drawing == null) return;
     final name = await DrawingSaveSheet.show(context, defaultName);
     if (!mounted) return;
-    if (name != null) {
+    if (name == null) return; // Закрытие ввода имени не удаляет черновик.
+    try {
       await _mapDataController.createDrawing(drawing.copyWith(name: name));
+      _drawingController.cancel();
+    } catch (_) {
+      if (mounted) _showMessage('Не удалось сохранить рисунок');
     }
-    _drawingController.cancel();
   }
 
   Future<void> _openSelectedLayerCalibration() async {
@@ -605,6 +637,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Widget _buildBottomActions(BuildContext context) {
     return BottomActions(
+      embedded: true,
       following: _locationController.followLocation,
       recording: _trackRecordingController.isRecording,
       aiming: _mapAimingController.isAiming,
@@ -940,15 +973,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _wikimapiaController.setActiveId('');
     }
     if (_drawingController.isActive) {
-      final now = DateTime.now();
-      final previousTap = _drawingController.lastDrawingTapAt;
-      final isDoubleTap = previousTap != null &&
-          now.difference(previousTap) < const Duration(milliseconds: 350);
-      if (isDoubleTap) {
+      if (_drawingController.handleDrawingTap(point)) {
         await _finishDrawing();
-        return;
       }
-      _drawingController.addPoint(point);
       return;
     }
     final hit = _mapInteractionController.hitTest(
@@ -959,12 +986,44 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
     if (hit?.track case final track?) {
       _highlightObject(trackId: track.id);
-      _openTrackSheet(track);
+      _objectPreview.toggle(ObjectPreview(
+        id: 'track-${track.id}',
+        point: point,
+        child: ObjectPreviewCard(
+          leading: Icon(Icons.route, size: 22, color: Color(track.color)),
+          title: track.name,
+          subtitle: MeasurementUtils.formatDistance(track.distance,
+              metric: _metricUnits),
+          onClose: _objectPreview.hide,
+          onTap: () {
+            _objectPreview.hide();
+            _openTrackSheet(track);
+          },
+        ),
+      ));
       return;
     }
     if (hit?.drawing case final drawing?) {
       _highlightObject(drawingId: drawing.id);
-      _openDrawingSheet(drawing);
+      _objectPreview.toggle(ObjectPreview(
+        id: 'drawing-${drawing.id}',
+        point: point,
+        child: ObjectPreviewCard(
+          leading: Icon(
+              drawing.category == 'measurement'
+                  ? Icons.straighten
+                  : Icons.gesture,
+              size: 22,
+              color: Color(drawing.color)),
+          title: drawing.name,
+          subtitle: MeasurementUtils.formatMeasurement(drawing, _metricUnits),
+          onClose: _objectPreview.hide,
+          onTap: () {
+            _objectPreview.hide();
+            _openDrawingSheet(drawing);
+          },
+        ),
+      ));
       return;
     }
     _closeObjectDetailsSheets();
@@ -991,9 +1050,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   void _handleMapPositionChanged(MapCamera camera, bool hasGesture) {
-    if (_locationController.followLocation && hasGesture) {
-      _locationController.stopFollowLocation();
-    }
+    if (hasGesture) _locationController.onUserGesture();
+    _locationController.onCameraChanged(camera, hasGesture: hasGesture);
     _scheduleWikimapiaRefresh(camera.visibleBounds);
     if (hasGesture) _scheduleSentinelRefresh();
   }
@@ -1071,6 +1129,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       shape: selection.shape,
       size: selection.size,
       group: selection.group,
+      media: selection.media,
     );
     try {
       await _mapDataController.createMarker(marker);
@@ -1095,8 +1154,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _showMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    AppNotifications.message(context, message);
   }
 
   Future<void> _openMarkerSheet(UserMarker marker) async {

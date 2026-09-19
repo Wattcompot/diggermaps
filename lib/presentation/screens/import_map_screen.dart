@@ -15,6 +15,9 @@ import '../../data/repositories/imported_map_repository.dart';
 import '../../data/repositories/track_repository.dart';
 import '../../data/utils/measurement_utils.dart';
 import '../../utils/ozi_map_parser.dart';
+import '../widgets/app_notifications.dart';
+import '../widgets/app_scroll.dart';
+import 'import_directory_index.dart';
 
 // =============================================================================
 // Supported extensions
@@ -79,15 +82,30 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
   // State
   // ---------------------------------------------------------------------------
   String _currentPath = '';
-  List<FileSystemEntity> _items = const [];
+  List<ImportDirectoryEntry> _entries = const [];
   bool _loading = false;
   bool _permissionGranted = false;
   bool _permissionDenied = false;
   String _statusText = '';
   String? _actionFeedback;
 
+  // Live-фильтр и сортировка списка файлов (по кэшированным метаданным).
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+  ImportSortField _sortField = ImportSortField.name;
+  bool _sortAscending = true;
+  bool _archivesFirst = false;
+
   final ImportedMapRepository _importedRepo = ImportedMapRepository();
   final TrackRepository _trackRepo = TrackRepository();
+
+  List<ImportDirectoryEntry> get _visibleEntries => ImportDirectoryIndex.apply(
+        entries: _entries,
+        query: _searchQuery,
+        field: _sortField,
+        ascending: _sortAscending,
+        archivesFirst: _archivesFirst,
+      );
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -97,6 +115,12 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
   void initState() {
     super.initState();
     _init();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _init() async {
@@ -151,17 +175,16 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
         _permissionDenied = true;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Доступ к файлам отклонён навсегда. '
-                'Откройте настройки приложения и предоставьте разрешение.',
-              ),
-              duration: Duration(seconds: 4),
+        AppNotifications.show(
+          context,
+          const SnackBar(
+            content: Text(
+              'Доступ к файлам отклонён навсегда. '
+              'Откройте настройки приложения и предоставьте разрешение.',
             ),
-          );
+            duration: Duration(seconds: 4),
+          ),
+        );
       }
     } else {
       setState(() {
@@ -169,14 +192,13 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
         _permissionDenied = true;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context)
-          ..hideCurrentSnackBar()
-          ..showSnackBar(
-            const SnackBar(
-              content: Text('Доступ к файлам отклонён.'),
-              duration: Duration(seconds: 3),
-            ),
-          );
+        AppNotifications.show(
+          context,
+          const SnackBar(
+            content: Text('Доступ к файлам отклонён.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
       }
     }
   }
@@ -240,20 +262,13 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
         if (mounted) setState(() => _loading = false);
         return;
       }
-      final raw = await dir.list().toList();
+      // Читаем каталог и метаданные (size/modified) ровно один раз за проход —
+      // фильтрация и сортировка дальше идут по кэшу, без stat и без I/O.
+      final entries = await ImportDirectoryIndex.load(dir);
       if (!mounted) return;
 
-      // Sort: directories first (alphabetical), then files (alphabetical)
-      raw.sort((a, b) {
-        final aDir = a is Directory;
-        final bDir = b is Directory;
-        if (aDir && !bDir) return -1;
-        if (!aDir && bDir) return 1;
-        return a.path.compareTo(b.path);
-      });
-
       setState(() {
-        _items = raw;
+        _entries = entries;
         _loading = false;
       });
     } catch (_) {
@@ -338,25 +353,23 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
       _actionFeedback = null;
       await _importFile(filePath, ext, customName);
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text(_actionFeedback ?? 'Импортировано: $customName'),
-            duration: const Duration(seconds: 4),
-          ),
-        );
+      AppNotifications.show(
+        context,
+        SnackBar(
+          content: Text(_actionFeedback ?? 'Импортировано: $customName'),
+          duration: const Duration(seconds: 4),
+        ),
+      );
       await widget.onImported?.call();
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text('Ошибка импорта: $e'),
-            duration: const Duration(seconds: 4),
-          ),
-        );
+      AppNotifications.show(
+        context,
+        SnackBar(
+          content: Text('Ошибка импорта: $e'),
+          duration: const Duration(seconds: 4),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() {
@@ -868,7 +881,7 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
     }
 
     // Loading / initial
-    if (_loading && _items.isEmpty && _statusText.isNotEmpty) {
+    if (_loading && _entries.isEmpty && _statusText.isNotEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -891,9 +904,128 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
     return Column(
       children: [
         _buildPathBar(),
+        _buildPickerToolbar(),
         if (_loading) const LinearProgressIndicator(color: Color(0xFFA67B5B)),
         Expanded(child: _buildFileList()),
       ],
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Search / sort toolbar
+  // ---------------------------------------------------------------------------
+
+  Widget _buildPickerToolbar() {
+    final scheme = Theme.of(context).colorScheme;
+    final muted = scheme.onSurface.withValues(alpha: 0.6);
+    final visible = _visibleEntries;
+    final hiddenBySearch = _searchQuery.trim().isNotEmpty;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      color: Theme.of(context).brightness == Brightness.dark
+          ? const Color(0xFF1F1F1F)
+          : const Color(0xFFFAF7F2),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _searchController,
+                  textInputAction: TextInputAction.search,
+                  style: TextStyle(fontSize: 14, color: scheme.onSurface),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    hintText: 'Поиск по имени файла',
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    suffixIcon: _searchQuery.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Очистить',
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                          ),
+                  ),
+                  onChanged: (value) => setState(() => _searchQuery = value),
+                ),
+              ),
+              const SizedBox(width: 8),
+              PopupMenuButton<ImportSortField>(
+                tooltip: 'Сортировка',
+                initialValue: _sortField,
+                onSelected: (field) => setState(() => _sortField = field),
+                itemBuilder: (context) =>
+                    const <PopupMenuEntry<ImportSortField>>[
+                  PopupMenuItem(
+                    value: ImportSortField.name,
+                    child: Text('По имени'),
+                  ),
+                  PopupMenuItem(
+                    value: ImportSortField.modified,
+                    child: Text('По дате изменения'),
+                  ),
+                  PopupMenuItem(
+                    value: ImportSortField.size,
+                    child: Text('По размеру'),
+                  ),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.sort, size: 20, color: scheme.onSurface),
+                      const SizedBox(width: 2),
+                      Icon(
+                        _sortAscending
+                            ? Icons.arrow_upward
+                            : Icons.arrow_downward,
+                        size: 15,
+                        color: muted,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: _sortAscending
+                    ? 'Сортировка по убыванию'
+                    : 'Сортировка по возрастанию',
+                icon: Icon(
+                  _sortAscending ? Icons.arrow_upward : Icons.arrow_downward,
+                  size: 18,
+                ),
+                color: scheme.onSurface,
+                onPressed: () =>
+                    setState(() => _sortAscending = !_sortAscending),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              FilterChip(
+                label: const Text('Архивы сначала'),
+                selected: _archivesFirst,
+                onSelected: (value) => setState(() => _archivesFirst = value),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  hiddenBySearch
+                      ? 'Найдено: ${visible.length} из ${_entries.length}'
+                      : '${visible.length} элементов',
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontSize: 12, color: muted),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -1009,66 +1141,99 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
   // ---------------------------------------------------------------------------
 
   Widget _buildFileList() {
-    if (_items.isEmpty && !_loading) {
-      return Center(
-        child: Text(
-          'Папка пуста',
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onSurface,
-          ),
-        ),
-      );
-    }
+    final entries = _visibleEntries;
+    final emptyLabel =
+        _searchQuery.trim().isEmpty ? 'Папка пуста' : 'Ничего не найдено';
 
-    return ListView.builder(
-      itemCount: _items.length,
-      itemBuilder: (context, index) {
-        final entity = _items[index];
-        final isDir = entity is Directory;
-        final isSupported = !isDir && _isSupported(entity.path);
-
-        return ListTile(
-          leading: Icon(
-            isDir ? Icons.folder : Icons.insert_drive_file,
-            color: isDir
-                ? const Color(0xFFA67B5B)
-                : isSupported
-                    ? const Color(0xFFA67B5B)
-                    : Colors.grey,
-          ),
-          title: Text(
-            p.basename(entity.path),
-            style: TextStyle(
-              color: isSupported
-                  ? const Color(0xFFA67B5B)
-                  : Theme.of(context).colorScheme.onSurface,
-              fontWeight: isSupported ? FontWeight.w600 : FontWeight.normal,
+    // Стандартная мягкая смена состояния «пусто/список»; сортировка и фильтр
+    // меняют тот же список без пересоздания (ключ списка постоянный).
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 180),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      child: entries.isEmpty
+          ? Center(
+              key: const ValueKey<String>('import-empty'),
+              child: Text(
+                emptyLabel,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
+              ),
+            )
+          : AppScrollView(
+              key: const ValueKey<String>('import-list'),
+              itemCount: entries.length,
+              itemBuilder: (context, index) => _buildEntryTile(entries[index]),
             ),
-          ),
-          subtitle: isSupported
-              ? Text(
-                  _formatLabel(entity.path),
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isSupported
-                        ? const Color(0xFF8B5E34)
-                        : Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withValues(alpha: 0.5),
-                  ),
-                )
-              : null,
-          onTap: () {
-            if (isDir) {
-              _navigateTo(entity.path);
-            } else if (isSupported) {
-              _onSupportedFileTap(entity.path);
-            }
-          },
-        );
+    );
+  }
+
+  Widget _buildEntryTile(ImportDirectoryEntry entry) {
+    final isDir = entry.isDirectory;
+    final isSupported = !isDir && _isSupported(entry.path);
+    final scheme = Theme.of(context).colorScheme;
+    final subtitle = isDir ? null : _entrySubtitle(entry, isSupported);
+
+    return ListTile(
+      leading: Icon(
+        isDir
+            ? Icons.folder
+            : entry.isArchive
+                ? Icons.archive_outlined
+                : Icons.insert_drive_file,
+        color: isDir || isSupported ? const Color(0xFFA67B5B) : Colors.grey,
+      ),
+      title: Text(
+        entry.name,
+        style: TextStyle(
+          color: isSupported ? const Color(0xFFA67B5B) : scheme.onSurface,
+          fontWeight: isSupported ? FontWeight.w600 : FontWeight.normal,
+        ),
+      ),
+      subtitle: subtitle == null
+          ? null
+          : Text(
+              subtitle,
+              style: TextStyle(
+                fontSize: 12,
+                color: scheme.onSurface.withValues(alpha: 0.6),
+              ),
+            ),
+      onTap: () {
+        if (isDir) {
+          _navigateTo(entry.path);
+        } else if (isSupported) {
+          _onSupportedFileTap(entry.path);
+        }
       },
     );
+  }
+
+  String? _entrySubtitle(ImportDirectoryEntry entry, bool isSupported) {
+    final parts = <String>[
+      if (isSupported) _formatLabel(entry.path),
+      if (entry.isArchive) 'Архив',
+      if (entry.sizeBytes != null) _formatBytes(entry.sizeBytes!),
+      if (entry.modified != null) _formatDate(entry.modified!),
+    ];
+    return parts.isEmpty ? null : parts.join(' • ');
+  }
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes Б';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} КБ';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} МБ';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} ГБ';
+  }
+
+  static String _formatDate(DateTime date) {
+    final d = date.toLocal();
+    String two(int value) => value.toString().padLeft(2, '0');
+    return '${two(d.day)}.${two(d.month)}.${d.year} '
+        '${two(d.hour)}:${two(d.minute)}';
   }
 }
 
@@ -1177,14 +1342,13 @@ class _ImportBottomSheetState extends State<_ImportBottomSheet> {
                 onPressed: () {
                   final name = _controller.text.trim();
                   if (name.isEmpty) {
-                    ScaffoldMessenger.of(context)
-                      ..hideCurrentSnackBar()
-                      ..showSnackBar(
-                        const SnackBar(
-                          content: Text('Введите название'),
-                          duration: Duration(seconds: 2),
-                        ),
-                      );
+                    AppNotifications.show(
+                      context,
+                      const SnackBar(
+                        content: Text('Введите название'),
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
                     return;
                   }
                   Navigator.pop(context, name);

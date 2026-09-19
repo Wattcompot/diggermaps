@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_location_marker/flutter_map_location_marker.dart';
 import 'package:flutter_map_mbtiles/flutter_map_mbtiles.dart';
-import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 
@@ -19,13 +18,18 @@ import '../../../presentation/providers/map_layers_controller.dart';
 import '../../../presentation/providers/sentinel_controller.dart';
 import '../../../presentation/providers/track_recording_controller.dart';
 import '../../../presentation/providers/wikimapia_controller.dart';
-import '../../../services/tile_cache/network_tile_provider_factory.dart';
+import 'coordinate_grid_layer.dart';
+import 'sentinel_imagery_layer.dart';
 import 'drawing_anchor_layer.dart';
 import 'drawing_label_layer.dart';
 import 'paint_line_layer.dart';
 import 'track_line_layer.dart';
 import 'user_marker_layer.dart';
+import 'object_preview_layer.dart';
 import 'wikimapia_layer.dart';
+
+/// Коричневый акцент приложения для GPS-маячка и сектора направления.
+const Color _locationAccent = Color(0xFFC4956A);
 
 class MapLayerStack extends StatelessWidget {
   const MapLayerStack({
@@ -48,8 +52,11 @@ class MapLayerStack extends StatelessWidget {
     required this.selectedTrackId,
     required this.followLocation,
     required this.locationLayerEnabled,
+    required this.positionStream,
     required this.metricUnits,
     required this.initialCenter,
+    this.initialZoom = 2,
+    this.onMapReady,
     required this.onTap,
     required this.onPositionChanged,
     required this.onPanStart,
@@ -60,6 +67,7 @@ class MapLayerStack extends StatelessWidget {
     required this.onWikimapiaObjectTap,
     required this.onMarkerTap,
     required this.onMarkerLongPress,
+    required this.previewController,
   });
 
   final MapController mapController;
@@ -80,8 +88,16 @@ class MapLayerStack extends StatelessWidget {
   final int? selectedTrackId;
   final bool followLocation;
   final bool locationLayerEnabled;
+
+  /// Общий broadcast-поток позиций (см. `LocationController.positionStream`).
+  ///
+  /// Передаётся снаружи: создание `Geolocator.getPositionStream()` внутри
+  /// `build` пересоздавало подписку на каждый rebuild и маячок пропадал.
+  final Stream<Position> positionStream;
   final bool metricUnits;
   final LatLng initialCenter;
+  final double initialZoom;
+  final VoidCallback? onMapReady;
   final ValueChanged<LatLng> onTap;
   final void Function(MapCamera camera, bool hasGesture) onPositionChanged;
   final GestureDragStartCallback? onPanStart;
@@ -92,6 +108,7 @@ class MapLayerStack extends StatelessWidget {
   final ValueChanged<String> onWikimapiaObjectTap;
   final ValueChanged<UserMarker> onMarkerTap;
   final ValueChanged<UserMarker> onMarkerLongPress;
+  final ObjectPreviewController previewController;
 
   double get baseLayerMaxZoom => defaultSources
       .firstWhere(
@@ -115,7 +132,8 @@ class MapLayerStack extends StatelessWidget {
           mapController: mapController,
           options: MapOptions(
             initialCenter: initialCenter,
-            initialZoom: 12.8,
+            initialZoom: initialZoom,
+            onMapReady: onMapReady,
             maxZoom: baseLayerMaxZoom,
             backgroundColor: const Color(0xFF1A1A1A),
             interactionOptions: InteractionOptions(
@@ -130,12 +148,14 @@ class MapLayerStack extends StatelessWidget {
             onPositionChanged: onPositionChanged,
           ),
           children: <Widget>[
+            CoordinateGridLayer(metricUnits: metricUnits),
             _buildBaseTileLayer(),
             if (layersController.baseLayerId == 'esri_world_imagery')
               _tileLayer(MapLayers.esriReference),
-            if (sentinelController.visible &&
-                sentinelController.tileUrl != null)
-              _sentinelTileLayer(),
+            SentinelImageryLayer(
+              key: const ValueKey('fresh-imagery'),
+              controller: sentinelController,
+            ),
             ..._enabledCustomLayers(),
             ..._importedMapLayers(),
             Stack(
@@ -169,34 +189,34 @@ class MapLayerStack extends StatelessWidget {
               ),
             if (locationLayerEnabled)
               CurrentLocationLayer(
+                key: const ValueKey('current-location'),
                 positionStream: const LocationMarkerDataStreamFactory()
-                    .fromGeolocatorPositionStream(
-                  stream: Geolocator.getPositionStream(
-                    locationSettings: const LocationSettings(
-                      accuracy: LocationAccuracy.best,
-                      distanceFilter: 1,
-                    ),
-                  ),
-                ),
+                    .fromGeolocatorPositionStream(stream: positionStream),
                 alignPositionOnUpdate:
                     followLocation ? AlignOnUpdate.always : AlignOnUpdate.never,
                 alignDirectionOnUpdate:
                     followLocation ? AlignOnUpdate.always : AlignOnUpdate.never,
                 alignPositionAnimationDuration:
                     const Duration(milliseconds: 500),
+                moveAnimationDuration: const Duration(milliseconds: 400),
+                rotateAnimationDuration: const Duration(milliseconds: 250),
                 style: LocationMarkerStyle(
                   marker: const DefaultLocationMarker(
-                    color: Color(0xFFA67B5B),
-                    child:
-                        Icon(Icons.navigation, color: Colors.white, size: 24),
+                    color: _locationAccent,
+                    child: Icon(
+                      Icons.navigation,
+                      color: Colors.white,
+                      size: 18,
+                    ),
                   ),
-                  markerSize: const Size(40, 40),
+                  markerSize: const Size(28, 28),
                   markerDirection: MarkerDirection.heading,
-                  accuracyCircleColor:
-                      const Color(0xFFA67B5B).withValues(alpha: 0.15),
-                  headingSectorColor:
-                      const Color(0xFFA67B5B).withValues(alpha: 0.3),
-                  headingSectorRadius: 60,
+                  accuracyCircleColor: _locationAccent.withValues(alpha: 0.10),
+                  // Мягкий широкий конус: пакетный HeadingSector сам растворяет
+                  // цвет радиальным градиентом до нуля, поэтому достаточно
+                  // очень низкой базовой альфы и большого радиуса.
+                  headingSectorColor: _locationAccent.withValues(alpha: 0.28),
+                  headingSectorRadius: 90,
                 ),
               ),
             UserMarkerLayer(
@@ -204,6 +224,7 @@ class MapLayerStack extends StatelessWidget {
               selectedMarkerId: selectedMarkerId,
               onMarkerTap: onMarkerTap,
               onMarkerLongPress: onMarkerLongPress,
+              previewController: previewController,
             ),
             DrawingAnchorLayer(
               activePoints: drawingController.activePoints,
@@ -212,10 +233,12 @@ class MapLayerStack extends StatelessWidget {
             ),
             DrawingLabelLayer(
               activePoints: drawingController.activePoints,
-              showActiveRuler: drawingController.mode == MapDrawingMode.ruler,
-              drawings: drawings,
+              activeMode: drawingController.mode,
+              activeSegments: drawingController.activeSegments,
+              drawings: <Drawing>[...drawings, ...temporaryDrawings],
               metric: metricUnits,
             ),
+            ObjectPreviewLayer(controller: previewController),
             const RichAttributionWidget(
               attributions: <SourceAttribution>[
                 TextSourceAttribution('© OpenStreetMap contributors'),
@@ -253,9 +276,7 @@ class MapLayerStack extends StatelessWidget {
       key: ValueKey(urlTemplate),
       urlTemplate: urlTemplate,
       fallbackUrl: MapLayers.openStreetMap,
-      tileProvider: kIsWeb
-          ? createNetworkTileProvider()
-          : FMTCStore(storeName).getTileProvider(),
+      tileProvider: tileProviderFactory.baseTileProvider(storeName),
       maxZoom: maxZoom,
       panBuffer: 3,
       keepBuffer: 6,
@@ -269,22 +290,6 @@ class MapLayerStack extends StatelessWidget {
       userAgentPackageName: MapLayers.userAgentPackageName,
     );
   }
-
-  TileLayer _sentinelTileLayer() => TileLayer(
-        key: ValueKey(
-          'imagery-${sentinelController.layerVersion}-'
-          '${sentinelController.date.toIso8601String()}-'
-          '${sentinelController.tileUrl!}',
-        ),
-        urlTemplate: sentinelController.tileUrl!,
-        tileProvider: sentinelController.tileProvider,
-        maxZoom: 19,
-        panBuffer: 3,
-        keepBuffer: 6,
-        tileDisplay: const TileDisplay.instantaneous(),
-        evictErrorTileStrategy: EvictErrorTileStrategy.notVisible,
-        errorTileCallback: (_, __, ___) {},
-      );
 
   List<Widget> _enabledCustomLayers() {
     return layersController.customMaps
@@ -428,14 +433,18 @@ class MapLayerStack extends StatelessWidget {
         );
       }
     }
-    if (drawingController.mode == MapDrawingMode.ruler &&
-        drawingController.activePoints.isNotEmpty) {
+    if ((drawingController.mode == MapDrawingMode.ruler ||
+            drawingController.mode == MapDrawingMode.planimeter ||
+            drawingController.mode == MapDrawingMode.polygon) &&
+        drawingController.activePoints.length >= 2) {
       polylines.add(
         Polyline(
           points: drawingController.activePoints,
-          strokeWidth: 3,
-          color: Colors.green,
-          pattern: StrokePattern.dashed(segments: const [10, 5]),
+          strokeWidth: drawingController.strokeWidth,
+          color: drawingController.color,
+          pattern: drawingController.mode == MapDrawingMode.polygon
+              ? const StrokePattern.solid()
+              : StrokePattern.dashed(segments: const [10, 5]),
         ),
       );
     }
@@ -454,6 +463,8 @@ class MapLayerStack extends StatelessWidget {
           .map(
             (drawing) => PaintLineData(
               points: drawing.points,
+              segments: drawing.segments,
+              width: drawing.strokeWidth,
               color: Color(drawing.color),
               selected: drawing.id == selectedDrawingId,
             ),
@@ -466,6 +477,8 @@ class MapLayerStack extends StatelessWidget {
           .map(
             (drawing) => PaintLineData(
               points: drawing.points,
+              segments: drawing.segments,
+              width: drawing.strokeWidth,
               color: Color(drawing.color),
               selected: false,
             ),
@@ -474,6 +487,8 @@ class MapLayerStack extends StatelessWidget {
           drawingController.activePoints.length > 1)
         PaintLineData(
           points: drawingController.activePoints,
+          segments: drawingController.activeSegments,
+          width: drawingController.strokeWidth,
           color: drawingController.color,
           selected: false,
         ),
@@ -519,7 +534,9 @@ class MapLayerStack extends StatelessWidget {
             color: Color(drawing.color).withValues(alpha: drawing.fillOpacity),
             borderColor: Color(drawing.color),
             borderStrokeWidth: drawing.strokeWidth,
-            pattern: const StrokePattern.solid(),
+            pattern: drawing.category == 'measurement'
+                ? StrokePattern.dashed(segments: const [10, 5])
+                : const StrokePattern.solid(),
           ),
         );
       }
@@ -530,10 +547,12 @@ class MapLayerStack extends StatelessWidget {
       polygons.add(
         Polygon(
           points: drawingController.activePoints,
-          color: Colors.cyan.withValues(alpha: 0.3),
+          color: drawingController.color.withValues(alpha: 0.3),
           borderColor: drawingController.color,
           borderStrokeWidth: drawingController.strokeWidth,
-          pattern: const StrokePattern.solid(),
+          pattern: drawingController.mode == MapDrawingMode.planimeter
+              ? StrokePattern.dashed(segments: const [10, 5])
+              : const StrokePattern.solid(),
         ),
       );
     }

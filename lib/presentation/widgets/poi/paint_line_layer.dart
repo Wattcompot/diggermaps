@@ -4,16 +4,34 @@ import 'package:latlong2/latlong.dart';
 
 import 'track_line_layer.dart';
 
+/// Одна рисуемая линия. [width] реально применяется painter'ом
+/// (раньше толщина была жёстко зашита 3.5 и стиль не отражался на карте).
+/// [segments] позволяет рисовать прерывистые штрихи одного рисунка
+/// без соединительных линий между pan-жестами.
 class PaintLineData {
   const PaintLineData({
     required this.points,
     required this.color,
     required this.selected,
+    this.width = 3.5,
+    this.segments,
   });
 
   final List<LatLng> points;
   final Color color;
   final bool selected;
+  final double width;
+  final List<List<LatLng>>? segments;
+
+  /// Набор под-путей для отрисовки. Если сегменты не заданы — одна линия.
+  List<List<LatLng>> get strokes {
+    final value = segments;
+    if (value == null || value.isEmpty) return <List<LatLng>>[points];
+    return value;
+  }
+
+  /// Толщина «обводки» выделения.
+  double get haloWidth => width + 3.5;
 }
 
 class PaintLineLayer extends StatelessWidget {
@@ -45,13 +63,13 @@ class PaintLinePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     for (final line in lines) {
-      final path = buildSmoothMapPath(camera, <List<LatLng>>[line.points]);
+      final path = buildSmoothMapPath(camera, line.strokes);
       if (line.selected) {
         canvas.drawPath(
           path,
           Paint()
             ..color = Colors.white
-            ..strokeWidth = 7
+            ..strokeWidth = line.haloWidth
             ..style = PaintingStyle.stroke
             ..strokeCap = StrokeCap.round
             ..strokeJoin = StrokeJoin.round,
@@ -61,7 +79,7 @@ class PaintLinePainter extends CustomPainter {
         path,
         Paint()
           ..color = line.color
-          ..strokeWidth = 3.5
+          ..strokeWidth = line.width
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round
           ..strokeJoin = StrokeJoin.round,

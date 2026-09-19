@@ -4,6 +4,7 @@ import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../theme/app_theme.dart';
+import '../app_notifications.dart';
 
 const _spectralCacheCleanupKey = 'spectral_cache_cleanup_days';
 
@@ -105,9 +106,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
   }
 
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    // Единый канал уведомлений: сообщение видно и поверх открытого bottom sheet.
+    AppNotifications.show(context, SnackBar(content: Text(message)));
   }
 
   @override

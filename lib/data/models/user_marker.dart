@@ -1,4 +1,8 @@
+import 'dart:convert';
+
 import 'package:latlong2/latlong.dart';
+
+import 'marker_media.dart';
 
 class UserMarker {
   final int? id;
@@ -12,6 +16,7 @@ class UserMarker {
   final String group;
   final bool visible;
   final DateTime createdAt;
+  final List<MarkerMedia> media;
 
   UserMarker({
     this.id,
@@ -25,12 +30,43 @@ class UserMarker {
     this.group = 'Общее',
     this.visible = true,
     DateTime? createdAt,
-  }) : createdAt = createdAt ?? DateTime.now();
+    List<MarkerMedia> media = const [],
+  })  : createdAt = createdAt ?? DateTime.now(),
+        media = List.unmodifiable(media);
 
   // Совместимые геттеры
   String get title => name;
   LatLng get point => LatLng(lat, lng);
   String get color => colorHex;
+
+  bool get hasMedia => media.isNotEmpty;
+  int get photoCount => media.where((item) => item.isPhoto).length;
+  int get voiceCount => media.where((item) => item.isVoice).length;
+  int get videoCount => media.where((item) => item.isVideo).length;
+
+  /// Основное фото плашки — первое добавленное.
+  MarkerMedia? get primaryPhoto {
+    for (final item in media) {
+      if (item.isPhoto) return item;
+    }
+    return null;
+  }
+
+  /// Первая голосовая заметка (для компактного плеера в плашке).
+  MarkerMedia? get primaryVoice {
+    for (final item in media) {
+      if (item.isVoice) return item;
+    }
+    return null;
+  }
+
+  /// Первое видео (компактный индикатор в плашке).
+  MarkerMedia? get primaryVideo {
+    for (final item in media) {
+      if (item.isVideo) return item;
+    }
+    return null;
+  }
 
   UserMarker copyWith({
     int? id,
@@ -44,6 +80,7 @@ class UserMarker {
     String? group,
     bool? visible,
     DateTime? createdAt,
+    List<MarkerMedia>? media,
   }) {
     return UserMarker(
       id: id ?? this.id,
@@ -57,6 +94,7 @@ class UserMarker {
       group: group ?? this.group,
       visible: visible ?? this.visible,
       createdAt: createdAt ?? this.createdAt,
+      media: media ?? this.media,
     );
   }
 
@@ -73,8 +111,20 @@ class UserMarker {
       'marker_group': group,
       'visible': visible ? 1 : 0,
       'created_at': createdAt.toIso8601String(),
+      'media_json': jsonEncode(media.map((item) => item.toMap()).toList()),
     };
   }
+
+  /// Tolerates the legacy column names/types of both marker tables.
+  static double _coordinate(dynamic primary, dynamic fallback) =>
+      (primary is num
+              ? primary
+              : fallback is num
+                  ? fallback
+                  : null)
+          ?.toDouble() ??
+      double.tryParse('${primary ?? fallback ?? ''}') ??
+      0;
 
   factory UserMarker.fromMap(Map<String, dynamic> map) {
     final createdAtValue = map['created_at'] ?? map['createdAt'];
@@ -82,13 +132,16 @@ class UserMarker {
       id: map['id'] as int?,
       name: map['name'] ?? map['title'] ?? '',
       description: (map['description'] ?? map['desc']) as String?,
-      lat: (map['lat'] ?? map['latitude'] as num).toDouble(),
-      lng: (map['lng'] ?? map['longitude'] as num).toDouble(),
+      lat: _coordinate(map['lat'], map['latitude']),
+      lng: _coordinate(map['lng'], map['longitude']),
       colorHex: map['color_hex'] ?? map['color'] ?? '#A67B5B',
       shape: (map['marker_shape'] ?? map['icon']) as String? ?? 'pin',
       size: (map['marker_size'] as num?)?.toDouble() ?? 42,
       group: (map['marker_group'] ?? map['group']) as String? ?? 'Общее',
-      visible: (map['visible'] as num? ?? 1) != 0,
+      visible: map['visible'] is bool
+          ? map['visible'] as bool
+          : (map['visible'] as num? ?? 1) != 0,
+      media: MarkerMedia.decodeList(map['media_json'] ?? map['media']),
       createdAt: createdAtValue is int
           ? DateTime.fromMillisecondsSinceEpoch(createdAtValue)
           : DateTime.tryParse(createdAtValue?.toString() ?? '') ??

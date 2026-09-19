@@ -114,9 +114,39 @@ class AppTheme {
         activeTrackColor: scheme.primary,
         thumbColor: scheme.primary,
       ),
+      // Scrollbar общего scroll-контейнера: тонкая полоса, подходящая и для
+      // тёмной, и для светлой темы; трек не рисуем, чтобы не перекрывать текст.
+      scrollbarTheme: ScrollbarThemeData(
+        thickness: const WidgetStatePropertyAll<double>(6),
+        radius: const Radius.circular(3),
+        crossAxisMargin: 2,
+        mainAxisMargin: 2,
+        trackVisibility: const WidgetStatePropertyAll<bool>(false),
+        thumbColor: WidgetStatePropertyAll<Color>(
+          dark
+              ? Colors.white.withValues(alpha: 0.45)
+              : Colors.black.withValues(alpha: 0.35),
+        ),
+      ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: scheme.primary,
         foregroundColor: scheme.onPrimary,
+      ),
+      // Уведомления в цветах текущей темы (без M3-дефолта `inverseSurface`,
+      // который в тёмной теме давал светлую плашку и не менялся вместе с
+      // темой). Floating — чтобы хост мог поднять их над контролами карты.
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: tokens.cardBackground,
+        contentTextStyle: TextStyle(color: foreground, fontSize: 14),
+        actionTextColor: scheme.primary,
+        closeIconColor: tokens.onSurfaceMuted,
+        elevation: 4,
+        insetPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: BorderSide(color: scheme.outline),
+        ),
       ),
     );
   }
