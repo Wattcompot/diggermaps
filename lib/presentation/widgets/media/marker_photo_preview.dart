@@ -6,6 +6,7 @@ import '../../../data/models/marker_media.dart';
 import '../../../services/media/marker_media_service.dart';
 import '../../../services/media/marker_media_store.dart';
 import '../app_notifications.dart';
+import 'media_viewer_dialog.dart';
 
 /// One primary photo; other attachments stay in the marker editor.
 class MarkerPhotoPreview extends StatefulWidget {
@@ -14,11 +15,17 @@ class MarkerPhotoPreview extends StatefulWidget {
     required this.media,
     this.store,
     this.height = 92,
+    this.interactive = true,
   });
 
   final MarkerMedia media;
   final MarkerMediaStore? store;
   final double height;
+
+  /// Когда `false`, миниатюра — только визуальный предпросмотр и не
+  /// перехватывает нажатие: тап проходит к родительской плашке (открытие
+  /// метки). Внутри редактора фото по-прежнему открывается по нажатию.
+  final bool interactive;
 
   @override
   State<MarkerPhotoPreview> createState() => _MarkerPhotoPreviewState();
@@ -72,31 +79,15 @@ class _MarkerPhotoPreviewState extends State<MarkerPhotoPreview> {
       }
       if (!mounted || pending != _file) return;
       if (_error != null) throw StateError(_error!);
-      await showDialog<void>(
-        context: context,
-        builder: (dialogContext) => Dialog(
-          insetPadding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Flexible(
-                child: InteractiveViewer(
-                  child: Image.file(
-                    file,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Text('Не удалось открыть фотографию'),
-                    ),
-                  ),
-                ),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('Закрыть'),
-              ),
-            ],
-          ),
+      // Тот же просмотрщик, что и в редакторе: карточка на карте и форма
+      // показывают вложение одинаково.
+      await MediaViewerDialog.show(
+        context,
+        file: file,
+        title: widget.media.name,
+        subtitle: mediaViewerSubtitle(
+          createdAt: widget.media.createdAt,
+          bytes: widget.media.bytes,
         ),
       );
     } catch (error) {
@@ -112,40 +103,52 @@ class _MarkerPhotoPreviewState extends State<MarkerPhotoPreview> {
   }
 
   @override
-  Widget build(BuildContext context) => Semantics(
-        button: true,
-        label: 'Открыть фотографию',
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: _open,
-            child: SizedBox(
-              height: widget.height,
-              width: double.infinity,
-              child: FutureBuilder<File?>(
-                future: _file,
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState != ConnectionState.done) {
-                    return _placeholder(Icons.photo_outlined);
-                  }
-                  final file = snapshot.data;
-                  if (file == null) {
-                    return _placeholder(Icons.image_not_supported_outlined);
-                  }
-                  return Image.file(
-                    file,
-                    fit: BoxFit.cover,
-                    cacheWidth: 600,
-                    errorBuilder: (_, __, ___) {
-                      _error = 'Не удалось открыть фотографию';
-                      return _placeholder(Icons.broken_image_outlined);
-                    },
-                  );
-                },
-              ),
-            ),
-          ),
+  Widget build(BuildContext context) {
+    // В компактной плашке фото остаётся немой картинкой: основной tap по
+    // плашке (открыть метку) имеет приоритет и не перехватывается thumbnail.
+    if (!widget.interactive) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: _image(),
+      );
+    }
+    return Semantics(
+      button: true,
+      label: 'Открыть фотографию',
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _open,
+          child: _image(),
+        ),
+      ),
+    );
+  }
+
+  Widget _image() => SizedBox(
+        height: widget.height,
+        width: double.infinity,
+        child: FutureBuilder<File?>(
+          future: _file,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return _placeholder(Icons.photo_outlined);
+            }
+            final file = snapshot.data;
+            if (file == null) {
+              return _placeholder(Icons.image_not_supported_outlined);
+            }
+            return Image.file(
+              file,
+              fit: BoxFit.cover,
+              cacheWidth: 600,
+              errorBuilder: (_, __, ___) {
+                _error = 'Не удалось открыть фотографию';
+                return _placeholder(Icons.broken_image_outlined);
+              },
+            );
+          },
         ),
       );
 

@@ -75,6 +75,8 @@ class MainActivity : FlutterActivity() {
                     val intent = Intent(Intent.ACTION_VIEW).apply {
                         setDataAndType(uri, call.argument<String>("mimeType") ?: "video/*")
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        // Carry the grant through external player/chooser hand-off.
+                        clipData = android.content.ClipData.newRawUri("video", uri)
                     }
                     startActivity(intent)
                     result.success(null)

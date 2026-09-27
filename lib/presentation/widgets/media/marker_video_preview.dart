@@ -44,45 +44,67 @@ class _MarkerVideoPreviewState extends State<MarkerVideoPreview> {
   }
 
   @override
-  Widget build(BuildContext context) => Tooltip(
-        message: 'Открыть видео',
-        child: InkWell(
-          onTap: _open,
-          borderRadius: BorderRadius.circular(6),
-          child: SizedBox(
-            height: 32,
-            child: Row(
-              children: <Widget>[
-                if (_busy)
-                  const SizedBox.square(
-                    dimension: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                else
-                  const Icon(Icons.video_library_outlined, size: 18),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    widget.count > 1 ? 'Видео · ${widget.count}' : 'Видео',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.labelSmall,
-                  ),
-                ),
-                if (widget.media.durationMs != null) ...<Widget>[
-                  const SizedBox(width: 4),
-                  Flexible(
-                    child: Text(
-                      widget.media.durationLabel,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelSmall,
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: 'Смотреть видео: ${widget.media.name}',
+        child: Tooltip(
+          message: 'Открыть видео',
+          child: InkWell(
+            onTap: _open,
+            borderRadius: BorderRadius.circular(6),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
+              child: Row(
+                children: <Widget>[
+                  if (_busy)
+                    const SizedBox.square(
+                      dimension: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else
+                    Icon(Icons.play_circle_fill,
+                        size: 28, color: Theme.of(context).colorScheme.primary),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            widget.count > 1
+                                ? 'Видео · ${widget.count}'
+                                : 'Видео · Смотреть',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                          Text(
+                            widget.media.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
+                  if (widget.media.durationMs != null) ...<Widget>[
+                    const SizedBox(width: 4),
+                    Flexible(
+                      child: Text(
+                        widget.media.durationLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 2),
+                  const Icon(Icons.open_in_new, size: 12),
                 ],
-                const SizedBox(width: 2),
-                const Icon(Icons.open_in_new, size: 12),
-              ],
+              ),
             ),
           ),
         ),

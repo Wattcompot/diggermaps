@@ -23,6 +23,25 @@ void main() {
     expect(scrollbar.controller, isNotNull);
   });
 
+  testWidgets('AppScrollView резервирует правый gutter под полосу',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        scrollBehavior: appScrollBehavior,
+        home: AppScrollView(
+          itemCount: 3,
+          itemBuilder: (context, index) =>
+              SizedBox(height: 24, child: Text('item $index')),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    final list = tester.widget<ListView>(find.byType(ListView));
+    final padding = list.padding! as EdgeInsets;
+    expect(padding.right, kAppScrollbarGutter);
+  });
+
   testWidgets('thumb скрыт, когда содержимое помещается во вьюпорт',
       (tester) async {
     await tester.pumpWidget(

@@ -22,6 +22,7 @@ import 'coordinate_grid_layer.dart';
 import 'sentinel_imagery_layer.dart';
 import 'drawing_anchor_layer.dart';
 import 'drawing_label_layer.dart';
+import 'location_marker_stream.dart';
 import 'paint_line_layer.dart';
 import 'track_line_layer.dart';
 import 'user_marker_layer.dart';
@@ -110,13 +111,13 @@ class MapLayerStack extends StatelessWidget {
   final ValueChanged<UserMarker> onMarkerLongPress;
   final ObjectPreviewController previewController;
 
-  double get baseLayerMaxZoom => defaultSources
-      .firstWhere(
-        (layer) => layer.id == layersController.baseLayerId,
-        orElse: () => defaultSources.first,
-      )
-      .maxZoom
-      .toDouble();
+  /// Единый предел приближения карты.
+  ///
+  /// Возвращает [MapLayers.maxUserZoom] независимо от выбранного базового слоя:
+  /// приближение одинаково для всех источников, а тайлы выше их родного зума
+  /// масштабируются (over-zoom), а не пропадают. Используется и как
+  /// `MapOptions.maxZoom`, и как `maxZoom` импортированных растровых слоёв.
+  double get baseLayerMaxZoom => MapLayers.maxUserZoom;
 
   @override
   Widget build(BuildContext context) {
@@ -140,8 +141,13 @@ class MapLayerStack extends StatelessWidget {
               flags: drawingController.mode == MapDrawingMode.line
                   ? InteractiveFlag.none
                   : InteractiveFlag.all,
-              enableMultiFingerGestureRace: true,
-              rotationThreshold: 5,
+              // Обычный панорамный жест двумя пальцами больше не «сваливается»
+              // в поворот: гонка жестов выключена (масштаб и поворот больше не
+              // отбирают жест друг у друга), а порог поворота поднят до
+              // библиотечных 20° — карта поворачивается только при осознанном
+              // вращении пальцами, а не при лёгком перекосе во время панорамы.
+              enableMultiFingerGestureRace: false,
+              rotationThreshold: 20,
               pinchZoomThreshold: 0.35,
             ),
             onTap: (tapPosition, point) => onTap(point),
@@ -187,38 +193,6 @@ class MapLayerStack extends StatelessWidget {
                 activeId: wikimapiaController.activeId,
                 onObjectTap: onWikimapiaObjectTap,
               ),
-            if (locationLayerEnabled)
-              CurrentLocationLayer(
-                key: const ValueKey('current-location'),
-                positionStream: const LocationMarkerDataStreamFactory()
-                    .fromGeolocatorPositionStream(stream: positionStream),
-                alignPositionOnUpdate:
-                    followLocation ? AlignOnUpdate.always : AlignOnUpdate.never,
-                alignDirectionOnUpdate:
-                    followLocation ? AlignOnUpdate.always : AlignOnUpdate.never,
-                alignPositionAnimationDuration:
-                    const Duration(milliseconds: 500),
-                moveAnimationDuration: const Duration(milliseconds: 400),
-                rotateAnimationDuration: const Duration(milliseconds: 250),
-                style: LocationMarkerStyle(
-                  marker: const DefaultLocationMarker(
-                    color: _locationAccent,
-                    child: Icon(
-                      Icons.navigation,
-                      color: Colors.white,
-                      size: 18,
-                    ),
-                  ),
-                  markerSize: const Size(28, 28),
-                  markerDirection: MarkerDirection.heading,
-                  accuracyCircleColor: _locationAccent.withValues(alpha: 0.10),
-                  // Мягкий широкий конус: пакетный HeadingSector сам растворяет
-                  // цвет радиальным градиентом до нуля, поэтому достаточно
-                  // очень низкой базовой альфы и большого радиуса.
-                  headingSectorColor: _locationAccent.withValues(alpha: 0.28),
-                  headingSectorRadius: 90,
-                ),
-              ),
             UserMarkerLayer(
               markers: markers,
               selectedMarkerId: selectedMarkerId,
@@ -238,6 +212,51 @@ class MapLayerStack extends StatelessWidget {
               drawings: <Drawing>[...drawings, ...temporaryDrawings],
               metric: metricUnits,
             ),
+            // Маячок геопозиции — выше пользовательских объектов: своя точка
+            // должна быть видна всегда, даже если метка или трек лежат ровно
+            // на ней. Поток позиций мемоизируется, иначе слой переподписывался
+            // на каждый rebuild карты и маячок пропадал.
+            if (locationLayerEnabled)
+              LocationMarkerStream(
+                stream: positionStream,
+                builder: (context, positions, headings) => CurrentLocationLayer(
+                  key: const ValueKey('current-location'),
+                  positionStream: positions,
+                  // Очищенный heading (без NaN/Infinity): иначе битый датчик
+                  // ориентации делал Transform.rotate маркера невидимым при
+                  // уже пришедшей позиции — «центрируется, но маркер не видно».
+                  headingStream: headings,
+                  alignPositionOnUpdate: followLocation
+                      ? AlignOnUpdate.always
+                      : AlignOnUpdate.never,
+                  alignDirectionOnUpdate: followLocation
+                      ? AlignOnUpdate.always
+                      : AlignOnUpdate.never,
+                  alignPositionAnimationDuration:
+                      const Duration(milliseconds: 500),
+                  moveAnimationDuration: const Duration(milliseconds: 400),
+                  rotateAnimationDuration: const Duration(milliseconds: 250),
+                  style: LocationMarkerStyle(
+                    marker: const DefaultLocationMarker(
+                      color: _locationAccent,
+                      child: Icon(
+                        Icons.navigation,
+                        color: Colors.white,
+                        size: 18,
+                      ),
+                    ),
+                    markerSize: const Size(28, 28),
+                    markerDirection: MarkerDirection.heading,
+                    accuracyCircleColor:
+                        _locationAccent.withValues(alpha: 0.10),
+                    // Мягкий широкий конус: пакетный HeadingSector сам
+                    // растворяет цвет радиальным градиентом до нуля, поэтому
+                    // достаточно очень низкой базовой альфы и большого радиуса.
+                    headingSectorColor: _locationAccent.withValues(alpha: 0.28),
+                    headingSectorRadius: 90,
+                  ),
+                ),
+              ),
             ObjectPreviewLayer(controller: previewController),
             const RichAttributionWidget(
               attributions: <SourceAttribution>[
@@ -260,7 +279,7 @@ class MapLayerStack extends StatelessWidget {
     );
     return _tileLayer(
       layer.urlTemplate,
-      maxZoom: layer.maxZoom.toDouble(),
+      maxNativeZoom: layer.maxZoom,
       storeName: layersController.baseLayerId == 'esri_world_imagery'
           ? 'esri_base'
           : 'base_layers',
@@ -269,7 +288,7 @@ class MapLayerStack extends StatelessWidget {
 
   TileLayer _tileLayer(
     String urlTemplate, {
-    double maxZoom = 19,
+    int maxNativeZoom = 19,
     String storeName = 'base_layers',
   }) {
     return TileLayer(
@@ -277,7 +296,11 @@ class MapLayerStack extends StatelessWidget {
       urlTemplate: urlTemplate,
       fallbackUrl: MapLayers.openStreetMap,
       tileProvider: tileProviderFactory.baseTileProvider(storeName),
-      maxZoom: maxZoom,
+      // Тайлы загружаются до родного максимума источника, а выше — до общего
+      // предела [MapLayers.maxUserZoom] — масштабируются (over-zoom), поэтому
+      // карта не чернеет при сильном приближении.
+      maxNativeZoom: maxNativeZoom,
+      maxZoom: MapLayers.maxUserZoom,
       panBuffer: 3,
       keepBuffer: 6,
       tileDisplay: const TileDisplay.fadeIn(
@@ -305,7 +328,8 @@ class MapLayerStack extends StatelessWidget {
             tileProvider: MbTilesTileProvider(
               mbtiles: tileProviderFactory.mbtiles(map.urlTemplate),
             ),
-            maxZoom: map.maxZoom.toDouble(),
+            maxNativeZoom: map.maxZoom,
+            maxZoom: MapLayers.maxUserZoom,
             panBuffer: 2,
             keepBuffer: 4,
             tileBuilder: (context, tileWidget, tile) => Transform.translate(
@@ -323,7 +347,8 @@ class MapLayerStack extends StatelessWidget {
             opacity: map.opacity,
             child: TileLayer(
               tileProvider: provider,
-              maxZoom: map.maxZoom.toDouble(),
+              maxNativeZoom: map.maxZoom,
+              maxZoom: MapLayers.maxUserZoom,
               panBuffer: 2,
               keepBuffer: 4,
             ),
@@ -337,7 +362,8 @@ class MapLayerStack extends StatelessWidget {
           opacity: map.opacity,
           child: TileLayer(
             tileProvider: tileProviderFactory.buildJnxProvider(map),
-            maxZoom: map.maxZoom.toDouble(),
+            maxNativeZoom: map.maxZoom,
+            maxZoom: MapLayers.maxUserZoom,
             panBuffer: 2,
             keepBuffer: 4,
           ),

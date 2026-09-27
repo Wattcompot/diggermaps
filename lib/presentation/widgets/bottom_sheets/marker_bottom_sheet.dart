@@ -47,10 +47,8 @@ class MarkerBottomSheet extends StatefulWidget {
     required VoidCallback onDirection,
     MarkerMediaService? mediaService,
   }) {
-    return showModalBottomSheet<UserMarker>(
+    return showObjectBottomSheet<UserMarker>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
       builder: (_) => MarkerBottomSheet(
         marker: marker,
         onDelete: onDelete,
@@ -169,6 +167,7 @@ class _MarkerBottomSheetState extends State<MarkerBottomSheet> {
             MarkerAppearanceButton(
                 shape: _marker.shape,
                 colorHex: _marker.colorHex,
+                size: _marker.size,
                 onTap: _editAppearance),
             const SizedBox(width: 12),
             Expanded(

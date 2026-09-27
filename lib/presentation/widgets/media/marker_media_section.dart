@@ -7,8 +7,10 @@ import 'package:flutter/material.dart';
 import '../../../data/models/marker_media.dart';
 import '../../../services/media/marker_media_service.dart';
 import '../app_notifications.dart';
+import 'device_gallery_sheet.dart';
 import 'marker_voice_player.dart';
 import 'marker_video_preview.dart';
+import 'media_viewer_dialog.dart';
 
 /// Attachment editor for a user marker: gallery photos, Android camera shots and
 /// voice notes (record/play/delete) for Windows and Android.
@@ -25,6 +27,7 @@ class MarkerMediaSection extends StatefulWidget {
     this.enabled = true,
     this.onDraftCreated,
     this.descriptionController,
+    this.gallerySource,
   });
 
   final List<MarkerMedia> media;
@@ -43,6 +46,10 @@ class MarkerMediaSection extends StatefulWidget {
   /// must delete those files; the saved attachments are never reported.
   final ValueChanged<String>? onDraftCreated;
 
+  /// Источник встроенной галереи. По умолчанию — чтение медиатеки устройства
+  /// через `photo_manager`; в тестах подменяется без плагина.
+  final DeviceGallerySource? gallerySource;
+
   @override
   State<MarkerMediaSection> createState() => MarkerMediaSectionState();
 }
@@ -59,6 +66,8 @@ class MarkerMediaSectionState extends State<MarkerMediaSection>
   final Stopwatch _recordClock = Stopwatch();
   bool _busy = false;
   bool _recording = false;
+  bool _showAll = false;
+  static const _collapsedCount = 3;
   String? _replacementVoiceRef;
 
   bool get isRecording => _recording;
@@ -169,6 +178,15 @@ class MarkerMediaSectionState extends State<MarkerMediaSection>
     if (_busy || !widget.enabled) return;
     if (_recording) await _finishRecording(notify: false);
     if (!mounted) return;
+
+    // Выбор без камеры на Android идёт через встроенную галерею приложения:
+    // системный файловый менеджер не открывается. Камера и Windows остаются
+    // на прежних пикерах (image_picker / file_picker).
+    if (!camera && _service.inAppGallerySupported) {
+      await _pickFromInAppGallery(video: video, replace: replace);
+      return;
+    }
+
     setState(() => _busy = true);
     try {
       final media = video
@@ -179,28 +197,65 @@ class MarkerMediaSectionState extends State<MarkerMediaSection>
         await _service.store.delete(media.fileRef);
         return;
       }
-      if (replace == null) {
-        addImportedMedia(media);
-      } else {
-        final index =
-            _media.indexWhere((item) => item.fileRef == replace.fileRef);
-        if (index < 0) {
+      _acceptPicked(media, replace: replace);
+    } catch (error) {
+      if (mounted) _notifyError(error);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _pickFromInAppGallery({
+    required bool video,
+    MarkerMedia? replace,
+  }) async {
+    setState(() => _busy = true);
+    try {
+      final picks = await DeviceGallerySheet.show(
+        context,
+        source: widget.gallerySource,
+        initialVideo: video,
+        maxSelection:
+            replace == null ? DeviceGallerySheet.defaultMaxSelection : 1,
+      );
+      if (!mounted || picks == null || picks.isEmpty) return;
+      for (final pick in picks) {
+        final media = pick.isVideo
+            ? await _service.importVideo(pick.path)
+            : await _service.importPhoto(pick.path);
+        if (!mounted) {
           await _service.store.delete(media.fileRef);
           return;
         }
-        _sessionRefs.add(media.fileRef);
-        widget.onDraftCreated?.call(media.fileRef);
-        setState(() {
-          _media = List<MarkerMedia>.of(_media)..[index] = media;
-        });
-        _emit();
-        await _discardReplacedDraft(replace);
+        _acceptPicked(media, replace: replace);
+        // Замена всегда одиночная: первый файл заменяет старое вложение,
+        // остальные для неё лишние, поэтому цикл прерывается.
+        if (replace != null) break;
       }
     } catch (error) {
       if (mounted) _notifyError(error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _acceptPicked(MarkerMedia media, {MarkerMedia? replace}) {
+    if (replace == null) {
+      addImportedMedia(media);
+      return;
+    }
+    final index = _media.indexWhere((item) => item.fileRef == replace.fileRef);
+    if (index < 0) {
+      unawaited(_service.store.delete(media.fileRef));
+      return;
+    }
+    _sessionRefs.add(media.fileRef);
+    widget.onDraftCreated?.call(media.fileRef);
+    setState(() {
+      _media = List<MarkerMedia>.of(_media)..[index] = media;
+    });
+    _emit();
+    unawaited(_discardReplacedDraft(replace));
   }
 
   Future<void> _toggleRecording() async {
@@ -213,7 +268,10 @@ class MarkerMediaSectionState extends State<MarkerMediaSection>
     try {
       await _service.stopPlayback();
       await _service.startRecording();
-      if (!mounted) return;
+      if (!mounted) {
+        await _service.cancelRecording();
+        return;
+      }
       _startTicker();
       setState(() {
         _recording = true;
@@ -327,40 +385,18 @@ class MarkerMediaSectionState extends State<MarkerMediaSection>
       _notify('Файл недоступен: сохранена только ссылка');
       return;
     }
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => Dialog(
-        insetPadding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Flexible(
-              child: InteractiveViewer(
-                child: Image.file(file, fit: BoxFit.contain),
-              ),
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: <Widget>[
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('Закрыть'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    Navigator.pop(dialogContext);
-                    unawaited(_remove(media));
-                  },
-                  child: const Text(
-                    'Удалить',
-                    style: TextStyle(color: Colors.red),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+    // Единый просмотрщик вложений: тёмный фон, масштабирование, аккуратные
+    // действия внизу вместо прежнего светлого диалога с картинкой.
+    await MediaViewerDialog.show(
+      context,
+      file: file,
+      title: media.name,
+      subtitle: mediaViewerSubtitle(
+        createdAt: media.createdAt,
+        bytes: media.bytes,
+        durationMs: media.durationMs,
       ),
+      onDelete: () => unawaited(_remove(media)),
     );
   }
 
@@ -425,7 +461,8 @@ class MarkerMediaSectionState extends State<MarkerMediaSection>
             duration: const Duration(milliseconds: 180),
             alignment: Alignment.topCenter,
             child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
-              for (final media in _media)
+              for (final media
+                  in _showAll ? _media : _media.take(_collapsedCount))
                 Padding(
                   key: ValueKey(media.fileRef),
                   padding: const EdgeInsets.only(top: 6),
@@ -471,6 +508,19 @@ class MarkerMediaSectionState extends State<MarkerMediaSection>
                           icon: const Icon(Icons.delete_outline, size: 20)),
                   ]),
                 ),
+              // Свёрнутый список показывает только первые [_collapsedCount]
+              // вложений, поэтому остальным нужна явная точка раскрытия —
+              // иначе они недостижимы из редактора.
+              if (_media.length > _collapsedCount)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    onPressed: () => setState(() => _showAll = !_showAll),
+                    child: Text(_showAll
+                        ? 'Свернуть'
+                        : 'Ещё ${_media.length - _collapsedCount}'),
+                  ),
+                ),
             ]),
           ),
         ],
@@ -492,9 +542,16 @@ class MarkerMediaSectionState extends State<MarkerMediaSection>
       enabled: supported && !_busy,
       tooltip: 'Добавить ${label.toLowerCase()}',
       onSelected: (camera) => _pick(video: video, camera: camera),
-      itemBuilder: (_) => const <PopupMenuEntry<bool>>[
-        PopupMenuItem(value: false, child: Text('Выбрать из файлов')),
-        PopupMenuItem(value: true, child: Text('Снять на камеру')),
+      itemBuilder: (_) => <PopupMenuEntry<bool>>[
+        // Название пункта отражает фактический маршрут выбора: на Android это
+        // встроенная галерея приложения, на Windows — системный диалог файлов.
+        PopupMenuItem(
+          value: false,
+          child: Text(
+            _service.inAppGallerySupported ? 'Из галереи' : 'Выбрать файл',
+          ),
+        ),
+        const PopupMenuItem(value: true, child: Text('Снять на камеру')),
       ],
       child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),

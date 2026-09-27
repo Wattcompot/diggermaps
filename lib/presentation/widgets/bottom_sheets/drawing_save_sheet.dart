@@ -11,10 +11,8 @@ class DrawingSaveSheet extends StatefulWidget {
   final String defaultName;
 
   static Future<String?> show(BuildContext context, String defaultName) {
-    return showModalBottomSheet<String>(
+    return showObjectBottomSheet<String>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
       builder: (_) => DrawingSaveSheet(defaultName: defaultName),
     );
   }

@@ -31,6 +31,8 @@ import '../app_scroll.dart';
 ///  * нижняя стопка не поднимается выше центра экрана при прицеливании
 ///    ([aimingMaxExtentFactor]) и выше [maxExtentFactor] в остальных
 ///    случаях — crosshair и карта остаются видимыми;
+///  * при прицеливании дополнительно резервируется [notificationReserve] —
+///    место под уведомление над кнопками, чтобы SnackBar не перекрывал прицел;
 ///  * если содержимое выше лимита, стопка не «переполняется», а
 ///    прокручивается со штатным общим scrollbar'ом ([appScrollBehavior]);
 ///  * [leftPanel] живёт в той же раскладке и не может пересечь нижнюю
@@ -52,6 +54,7 @@ class MapBottomDock extends StatelessWidget {
     this.statsTopOffset = 138,
     this.maxExtentFactor = 0.62,
     this.aimingMaxExtentFactor = 0.5,
+    this.notificationReserve = 0,
     this.crosshairGap = _defaultCrosshairGap,
     this.panelGap = 8,
     this.railGap = 24,
@@ -95,6 +98,15 @@ class MapBottomDock extends StatelessWidget {
   /// То же для режима прицеливания: 0.5 держит стопку строго ниже центра.
   final double aimingMaxExtentFactor;
 
+  /// Запас высоты под уведомление над нижней стопкой в режиме прицеливания.
+  ///
+  /// Тематический SnackBar рисует хост уведомлений, прижимая его к верху
+  /// нижней стопки. Чтобы уведомление не залезло на прицел, стопка
+  /// укорачивается на эту величину: над кнопками остаётся место под плашку.
+  /// Обычно сюда передают фактическую высоту тематического SnackBar
+  /// ([AppNotifications.themedSnackBarHeight]); вне прицеливания не влияет.
+  final double notificationReserve;
+
   /// Дополнительный зазор до центра экрана в режиме прицеливания.
   ///
   /// Учитывает размер самого прицела: `CrosshairPainter` оставляет разрыв
@@ -124,8 +136,11 @@ class MapBottomDock extends StatelessWidget {
     final factor = aiming ? aimingMaxExtentFactor : maxExtentFactor;
 
     // Верхний край нижней стопки не доходит до центра экрана: там crosshair,
-    // и в любом случае половина карты остаётся доступной.
-    final guard = screen.height * factor - bottomInset - crosshairGap;
+    // и в любом случае половина карты остаётся доступной. В прицеливании
+    // дополнительно резервируем высоту под уведомление: SnackBar висит над
+    // стопкой и не должен перекрывать прицел.
+    final reserve = aiming ? math.max(0.0, notificationReserve) : 0.0;
+    final guard = screen.height * factor - bottomInset - crosshairGap - reserve;
 
     return Positioned.fill(
       child: Padding(

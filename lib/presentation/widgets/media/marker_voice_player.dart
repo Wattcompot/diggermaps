@@ -168,8 +168,8 @@ class _MarkerVoicePlayerState extends State<MarkerVoicePlayer> {
         ? (_position.inMilliseconds / totalMs).clamp(0.0, 1.0)
         : 0.0;
     final playing = _state == PlayerState.playing;
-    return SizedBox(
-      height: 52,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 52),
       child: Row(
         children: <Widget>[
           IconButton(

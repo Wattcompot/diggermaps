@@ -45,6 +45,14 @@ class MarkerMediaService {
   bool get cameraSupported =>
       supported && defaultTargetPlatform == TargetPlatform.android;
 
+  /// Встроенная галерея приложения доступна там, где работает `photo_manager`.
+  ///
+  /// На Android вложения выбираются в собственной сетке DiggerMaps, а не в
+  /// системном файловом менеджере. На Windows медиатека системы не читается,
+  /// поэтому там остаётся прежний выбор файла.
+  bool get inAppGallerySupported =>
+      supported && defaultTargetPlatform == TargetPlatform.android;
+
   bool get isRecording => _recordingRef != null;
 
   bool get isPlaying => _player?.state == PlayerState.playing;
@@ -83,6 +91,10 @@ class MarkerMediaService {
   Future<MarkerMedia> importPhoto(String sourcePath) =>
       store.importPhoto(sourcePath);
 
+  /// Same for a video chosen in the in-app gallery (or any known path).
+  Future<MarkerMedia> importVideo(String sourcePath, {int? durationMs}) =>
+      store.importVideo(sourcePath, durationMs: durationMs);
+
   Future<MarkerMedia?> pickVideo({bool camera = false}) async {
     if (!supported) {
       throw UnsupportedError('Медиа доступны на Android и Windows');
@@ -108,15 +120,20 @@ class MarkerMediaService {
   }
 
   Future<void> openVideo(MarkerMedia media) async {
-    final file = await store.resolve(media.fileRef);
-    if (!media.isVideo || file == null || !await file.exists()) {
+    if (_disposed) throw StateError('Проигрыватель недоступен');
+    final file = media.isVideo ? await store.resolve(media.fileRef) : null;
+    if (file == null || !await file.exists() || await file.length() == 0) {
       throw StateError('Видео недоступно');
     }
     if (defaultTargetPlatform == TargetPlatform.android) {
       // Private app files need a temporary content URI grant on Android.
       await const MethodChannel('digger_maps/media').invokeMethod<void>(
         'openVideo',
-        <String, String>{'path': file.path, 'mimeType': media.mimeType},
+        <String, String>{
+          'path': file.path,
+          'mimeType':
+              media.mimeType.startsWith('video/') ? media.mimeType : 'video/*',
+        },
       );
     } else if (!await launchUrl(file.uri,
         mode: LaunchMode.externalApplication)) {
@@ -253,7 +270,14 @@ class MarkerMediaService {
       return 'Медиа недоступны на этом устройстве';
     }
     if (error is PlatformException) {
-      return 'Нет доступа к камере или файлам. Проверьте разрешения';
+      switch (error.code) {
+        case 'no_player':
+          return 'Не найдено приложение для просмотра видео';
+        case 'video_unavailable':
+          return 'Не удалось открыть видео. Файл может быть недоступен';
+        default:
+          return 'Нет доступа к камере или файлам. Проверьте разрешения';
+      }
     }
     return 'Не удалось выполнить операцию с медиа';
   }

@@ -36,6 +36,7 @@ class TopBar extends StatelessWidget {
               listenable: searchController,
               builder: (context, _) => TextField(
                 controller: searchController.textController,
+                focusNode: searchController.searchFocusNode,
                 onChanged: searchController.onSearchChanged,
                 onTap: () {
                   if (searchController.textController.text.isEmpty) {

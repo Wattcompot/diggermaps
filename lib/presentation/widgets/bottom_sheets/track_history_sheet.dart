@@ -27,10 +27,8 @@ class TrackHistorySheet {
               Duration.zero,
               (sum, segment) => sum + segment.duration,
             );
-    return showModalBottomSheet<void>(
+    return showObjectBottomSheet<void>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
       builder: (sheetContext) => ObjectBottomSheet(
         child: Column(
           mainAxisSize: MainAxisSize.min,

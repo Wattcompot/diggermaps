@@ -35,10 +35,8 @@ class TrackBottomSheet extends StatefulWidget {
     required VoidCallback onShare,
     required VoidCallback onNavigation,
   }) =>
-      showModalBottomSheet<Track>(
+      showObjectBottomSheet<Track>(
         context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
         builder: (_) => TrackBottomSheet(
           track: track,
           onDelete: onDelete,

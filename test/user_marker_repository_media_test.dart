@@ -87,6 +87,78 @@ void main() {
     });
   });
 
+  group('видео переживает перезапуск приложения', () {
+    test('ссылка, метаданные и файл доступны из нового репозитория', () async {
+      final source = File(p.join(root.path, 'clip.mp4'))
+        ..createSync(recursive: true)
+        ..writeAsBytesSync(List<int>.filled(256, 7));
+      final video = await mediaStore.importVideo(source.path);
+      await repository.create(markerWith(name: 'С видео', media: [video]));
+
+      // «Перезапуск»: новые экземпляры читают тот же каталог с диска.
+      final restartedStore = MarkerMediaStore(documentsDirectory: root);
+      final restartedRepository = UserMarkerRepository(
+        jsonStore: MarkerJsonStore(directory: root),
+        mediaStore: restartedStore,
+      );
+
+      final loaded = (await restartedRepository.getAll()).single;
+      final restored = loaded.media.single;
+      expect(restored.isVideo, isTrue);
+      expect(restored.fileRef, video.fileRef);
+      expect(restored.mimeType, 'video/mp4');
+      expect(restored.name, 'clip.mp4');
+
+      // Путь по ссылке после перезапуска остаётся рабочим: файл на месте и не
+      // пустой — ровно эти условия проверяет openVideo перед запуском.
+      final file = await restartedStore.resolve(restored.fileRef);
+      expect(file, isNotNull);
+      expect(await file!.exists(), isTrue);
+      expect(await file.length(), greaterThan(0));
+    });
+
+    test('видео, фото и голос сосуществуют в одной метке', () async {
+      final video = await mediaStore.importVideo(
+        (File(p.join(root.path, 'clip.mp4'))
+              ..createSync(recursive: true)
+              ..writeAsBytesSync(List<int>.filled(64, 1)))
+            .path,
+      );
+      final photo = await mediaStore.importPhoto(sourcePhoto('shot.jpg').path);
+      final voiceRef = await mediaStore.allocate('wav');
+      final voiceFile = (await mediaStore.resolve(voiceRef))!;
+      voiceFile.writeAsBytesSync(List<int>.filled(64, 2));
+      final voice = MarkerMedia(
+        fileRef: voiceRef,
+        type: MarkerMedia.typeVoice,
+        name: 'Голосовая заметка.wav',
+        mimeType: 'audio/wav',
+        createdAt: DateTime(2026, 4, 1),
+        bytes: 64,
+        durationMs: 4000,
+      );
+
+      final id = await repository.create(markerWith(
+        name: 'Смешанная',
+        media: <MarkerMedia>[photo, video, voice],
+      ));
+
+      final loaded = (await repository.read(id))!;
+      expect(loaded.photoCount, 1);
+      expect(loaded.videoCount, 1);
+      expect(loaded.voiceCount, 1);
+      expect(loaded.primaryVideo!.fileRef, video.fileRef);
+
+      for (final ref in <String>[
+        photo.fileRef,
+        video.fileRef,
+        voice.fileRef,
+      ]) {
+        expect(await mediaStore.exists(ref), isTrue, reason: ref);
+      }
+    });
+  });
+
   group('очистка файлов', () {
     test('снятое вложение удаляется после успешного сохранения', () async {
       final media = await mediaStore.importPhoto(sourcePhoto('a.jpg').path);

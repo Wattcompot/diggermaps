@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
+
+import 'app_scroll.dart';
 
 const objectEditorColors = <Color>[
   Color(0xFFFF0000),
@@ -11,27 +12,51 @@ const objectEditorColors = <Color>[
   Color(0xFFFFFFFF),
 ];
 
+/// Открывает [ObjectBottomSheet] как modal bottom sheet со стоковой ручкой
+/// перетаскивания Material.
+///
+/// Почему именно так:
+///  * `showDragHandle: true` рисует нативную ручку, а `enableDrag: true` вешает
+///    штатный жест листа на всю его площадь — тянуть вниз можно с любого места,
+///    а не только за ручку;
+///  * `isScrollControlled: true` оставлен, чтобы лист занимал столько, сколько
+///    нужно содержимому.
+///
+/// Как это уживается с прокруткой формы: `Scrollable` регистрирует жест
+/// вертикального драга только когда содержимое реально переполняет лист
+/// (`shouldAcceptUserOffset`). Поэтому:
+///  * форма помещается — вертикальный жест в любом месте тянет сам лист;
+///  * форма длиннее листа — жест по форме прокручивает её, а жест по шапке,
+///    ручке, отступам и кнопкам по-прежнему тянет лист;
+///  * вытягивание вниз в самом верху прокрученного списка дообрабатывает
+///    [ObjectBottomSheet] и закрывает лист (см. `_onScrollNotification`).
+Future<T?> showObjectBottomSheet<T>({
+  required BuildContext context,
+  required WidgetBuilder builder,
+  bool useRootNavigator = false,
+  RouteSettings? routeSettings,
+}) =>
+    showModalBottomSheet<T>(
+      context: context,
+      isScrollControlled: true,
+      enableDrag: true,
+      showDragHandle: true,
+      // Плавное появление/закрытие вместо резкого старта анимации.
+      useRootNavigator: useRootNavigator,
+      routeSettings: routeSettings,
+      builder: builder,
+    );
+
 /// Общая оболочка редакторов объектов.
 ///
 /// Содержимое остаётся локальным для каждого объекта, а оболочка даёт
-/// ручку перетаскивания, корректные ограничения по высоте, прокрутку и
-/// закрытие свайпом вниз.
+/// корректные ограничения по высоте, безопасную прокрутку, место под
+/// вертикальный scrollbar и закрытие вытягиванием вниз в самом верху списка.
 ///
-/// Почему свайп не работал: внутри лежал `SingleChildScrollView` с
-/// `ClampingScrollPhysics`, который всегда выигрывал вертикальный drag у
-/// `BottomSheet`, даже когда прокручивать было нечего. Теперь:
-///
-///  * пока содержимое помещается — прокрутка выключена, и весь лист тянется
-///    целиком (внешний [GestureDetector]);
-///  * когда содержимое переполняет лист — оно прокручивается, а лист тянется
-///    за ручку либо при overscroll вверху списка (перетаскивание «выше нуля»
-///    транслируется в смещение листа);
-///  * достаточный сдвиг или быстрый флик вниз закрывают лист, иначе он
-///    плавно возвращается на место.
-///
-/// Важно: собственный `Scrollbar` здесь НЕ добавляется — глобальное
-/// `ScrollBehavior` вводит прокруточную полосу централизованно, поэтому
-/// дублировать её нельзя.
+/// Важно: собственный `Scrollbar` здесь НЕ добавляется — полосу вводит
+/// централизованно `ScrollConfiguration(appScrollBehavior)` (см. ниже), поэтому
+/// дублировать её нельзя. Ручка перетаскивания тоже не рисуется: её даёт
+/// нативный modal route через [showObjectBottomSheet].
 class ObjectBottomSheet extends StatefulWidget {
   const ObjectBottomSheet({
     super.key,
@@ -41,7 +66,6 @@ class ObjectBottomSheet extends StatefulWidget {
     this.scrollController,
     this.physics,
     this.padding = const EdgeInsets.fromLTRB(16, 0, 16, 16),
-    this.dismissible = true,
   });
 
   final Widget child;
@@ -53,9 +77,6 @@ class ObjectBottomSheet extends StatefulWidget {
   final ScrollPhysics? physics;
   final EdgeInsetsGeometry padding;
 
-  /// Разрешить закрытие свайпом вниз.
-  final bool dismissible;
-
   @override
   State<ObjectBottomSheet> createState() => _ObjectBottomSheetState();
 }
@@ -66,38 +87,33 @@ class _ObjectBottomSheetState extends State<ObjectBottomSheet>
   ScrollController get _controller =>
       widget.scrollController ?? (_ownedController ??= ScrollController());
 
-  late final AnimationController _settle = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 220),
-  )..addListener(() {
-      setState(() => _offset = _settleTween.evaluate(_settle));
-    });
-  Tween<double> _settleTween = Tween<double>(begin: 0, end: 0);
-
-  /// Текущее смещение листа вниз (лог. пиксели).
-  double _offset = 0;
-
-  /// Прокручивается ли содержимое (переполняет ли максимальную высоту).
-  bool _overflow = false;
-
-  /// Идёт ли перетаскивание за счёт overscroll списка.
+  /// Смещение листа вниз, пока пользователь вытягивает его из начала списка.
+  ///
+  /// Нативный жест (`enableDrag`) двигает лист сам; здесь обрабатывается только
+  /// тот случай, когда жест начался по прокручиваемому содержимому и список уже
+  /// стоит в самом верху — тогда прокрутка «упирается» и жест транслируется в
+  /// смещение листа.
+  double _pullOffset = 0;
   bool _overscrollDrag = false;
-  double _lastOverscrollVelocity = 0;
-
   bool _dismissed = false;
+
+  // Контроллер докрутки создаётся в initState (а не как `late final` с ленивой
+  // инициализацией): иначе, если пользователь ни разу не тянул лист, первое
+  // обращение к нему происходило бы в dispose() — создание тикера ищет
+  // TickerMode на уже деактивированном элементе и падает с «Looking up a
+  // deactivated widget's ancestor is unsafe».
+  late final AnimationController _settle;
+  Tween<double> _settleTween = Tween<double>(begin: 0, end: 0);
 
   @override
   void initState() {
     super.initState();
-    // Initialise the ticker while the element is active, even without a drag.
-    _settle;
-    _scheduleMeasure();
-  }
-
-  @override
-  void didUpdateWidget(covariant ObjectBottomSheet oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _scheduleMeasure();
+    _settle = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 200),
+    )..addListener(() {
+        setState(() => _pullOffset = _settleTween.evaluate(_settle));
+      });
   }
 
   @override
@@ -107,106 +123,51 @@ class _ObjectBottomSheetState extends State<ObjectBottomSheet>
     super.dispose();
   }
 
-  // ---------------------------------------------------------------- overflow
+  // --------------------------------------------------- pull-down из списка
 
-  void _scheduleMeasure() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_controller.hasClients) return;
-      if (_controller.positions.length != 1) return;
-      final position = _controller.positions.first;
-      if (!position.hasContentDimensions) return;
-      _applyOverflow(position.maxScrollExtent > position.minScrollExtent);
-    });
-  }
-
-  void _applyOverflow(bool next) {
-    if (next == _overflow) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || next == _overflow) return;
-      setState(() => _overflow = next);
-    });
-  }
-
-  bool _onMetrics(ScrollMetricsNotification notification) {
-    _applyOverflow(notification.metrics.maxScrollExtent >
-        notification.metrics.minScrollExtent);
-    return false;
-  }
-
-  // ------------------------------------------------------------ drag (sheet)
-
-  void _onDragStart(DragStartDetails details) {
-    _settle.stop();
-  }
-
-  void _onDragUpdate(DragUpdateDetails details) {
-    final delta = details.primaryDelta ?? 0;
-    _applyDrag(delta);
-  }
-
-  void _applyDrag(double delta) {
-    final next = (_offset + delta).clamp(0.0, double.infinity);
-    if (next == _offset) return;
-    setState(() => _offset = next);
-  }
-
-  void _onDragEnd(DragEndDetails details) {
-    _finishDrag(details.primaryVelocity ?? 0);
-  }
-
-  void _finishDrag(double velocity) {
-    if (_dismissed || !mounted) return;
-    final height = context.size?.height ?? 0;
-    final threshold = height > 0 ? height * 0.3 : 120.0;
-    final shouldDismiss = widget.dismissible &&
-        (_offset > threshold || (velocity > 700 && _offset > 24));
-    if (shouldDismiss) {
-      _dismissed = true;
-      Navigator.of(context).maybePop();
-      return;
-    }
-    _settleTween = Tween<double>(begin: _offset, end: 0);
-    _settle
-      ..duration = const Duration(milliseconds: 220)
-      ..forward(from: 0);
-  }
-
-  // ------------------------------------------------------- drag (overscroll)
-
-  bool _onScroll(ScrollNotification notification) {
-    if (notification.depth != 0 || !_overflow) return false;
+  bool _onScrollNotification(ScrollNotification notification) {
+    if (notification.depth != 0) return false;
     if (notification is OverscrollNotification) {
-      // Пользователь тянет список ниже нулевой позиции: транслируем сдвиг в
-      // смещение всего листа — как в DraggableScrollableSheet.
+      // Пользователь тянет список ниже нулевой позиции: транслируем этот
+      // сдвиг в смещение всего листа (как в DraggableScrollableSheet).
       if (notification.overscroll < 0 && notification.dragDetails != null) {
         _overscrollDrag = true;
         _settle.stop();
-        _applyDrag(-notification.overscroll);
+        _applyPull(-notification.overscroll);
       }
       return false;
     }
     if (notification is ScrollUpdateNotification && _overscrollDrag) {
-      // Палец пошёл обратно вверх, пока лист смещён: убираем смещение до
-      // того, как список начнёт прокручиваться.
+      // Палец пошёл обратно вверх, пока лист смещён: сначала убираем смещение.
       final delta = notification.scrollDelta ?? 0;
-      if (delta > 0 && _offset > 0) _applyDrag(-delta);
+      if (delta > 0 && _pullOffset > 0) _applyPull(-delta);
       return false;
     }
     if (notification is ScrollEndNotification && _overscrollDrag) {
       _overscrollDrag = false;
-      final velocity =
-          notification.dragDetails?.primaryVelocity ?? _lastOverscrollVelocity;
-      _lastOverscrollVelocity = 0;
-      _finishDrag(velocity);
+      _finishPull(notification.dragDetails?.primaryVelocity ?? 0);
       return false;
     }
-    if (notification is UserScrollNotification &&
-        notification.direction == ScrollDirection.idle &&
-        _overscrollDrag) {
-      _overscrollDrag = false;
-      _finishDrag(0);
-    }
     return false;
+  }
+
+  void _applyPull(double delta) {
+    final next = (_pullOffset + delta).clamp(0.0, double.infinity);
+    if (next == _pullOffset) return;
+    setState(() => _pullOffset = next);
+  }
+
+  void _finishPull(double velocity) {
+    if (_dismissed || !mounted) return;
+    final height = context.size?.height ?? 0;
+    final threshold = height > 0 ? height * 0.3 : 120.0;
+    if (_pullOffset > threshold || (velocity > 700 && _pullOffset > 24)) {
+      _dismissed = true;
+      Navigator.of(context).maybePop();
+      return;
+    }
+    _settleTween = Tween<double>(begin: _pullOffset, end: 0);
+    _settle.forward(from: 0);
   }
 
   // ------------------------------------------------------------------- build
@@ -218,39 +179,12 @@ class _ObjectBottomSheetState extends State<ObjectBottomSheet>
         MediaQuery.sizeOf(context).height * widget.maxHeightFactor;
     final keyboard = MediaQuery.viewInsetsOf(context).bottom;
 
-    final handle = Padding(
-      padding: const EdgeInsets.only(top: 10, bottom: 6),
-      child: Center(
-        child: Container(
-          width: 40,
-          height: 4,
-          decoration: BoxDecoration(
-            color: Colors.grey.shade600,
-            borderRadius: BorderRadius.circular(2),
-          ),
-        ),
-      ),
-    );
+    // Резервируем правый gutter под scrollbar, чтобы полоса не перекрывала
+    // содержимое формы. Нижний отступ учитывает клавиатуру.
+    final padding = widget.padding
+        .add(EdgeInsets.only(right: kAppScrollbarGutter, bottom: keyboard));
 
-    final scrollable = NotificationListener<ScrollMetricsNotification>(
-      onNotification: _onMetrics,
-      child: NotificationListener<ScrollNotification>(
-        onNotification: _onScroll,
-        child: SingleChildScrollView(
-          controller: _controller,
-          primary: false,
-          padding: widget.padding.add(EdgeInsets.only(bottom: keyboard)),
-          // Пока содержимое помещается — прокрутки нет, и лист тянется целиком.
-          physics: _overflow
-              ? (widget.physics ?? const ClampingScrollPhysics())
-              : const NeverScrollableScrollPhysics(),
-          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          child: widget.child,
-        ),
-      ),
-    );
-
-    Widget sheet = Material(
+    final sheet = Material(
       color: widget.backgroundColor ?? theme.colorScheme.surface,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
       clipBehavior: Clip.antiAlias,
@@ -259,41 +193,30 @@ class _ObjectBottomSheetState extends State<ObjectBottomSheet>
         bottom: true,
         child: ConstrainedBox(
           constraints: BoxConstraints(maxHeight: maxHeight),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              // Ручка всегда тянет лист, даже когда список прокручивается.
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onVerticalDragStart: _onDragStart,
-                onVerticalDragUpdate: _onDragUpdate,
-                onVerticalDragEnd: _onDragEnd,
-                child: SizedBox(width: double.infinity, child: handle),
+          child: ScrollConfiguration(
+            // Даём полосу даже там, где `MaterialApp.scrollBehavior` не задан
+            // (например, изолированные тесты), и не дублируем её во вложенных
+            // прокрутках — за это отвечает [AppScrollbarScope].
+            behavior: appScrollBehavior,
+            child: NotificationListener<ScrollNotification>(
+              onNotification: _onScrollNotification,
+              child: SingleChildScrollView(
+                controller: _controller,
+                primary: false,
+                padding: padding,
+                physics: widget.physics ?? const ClampingScrollPhysics(),
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                child: widget.child,
               ),
-              Flexible(child: scrollable),
-            ],
+            ),
           ),
         ),
       ),
     );
 
-    if (widget.dismissible) {
-      // Внешний детектор получает drag, когда прокрутка выключена (содержимое
-      // помещается). При переполнении арену выигрывает список, а лист
-      // двигается через overscroll (см. [_onScroll]).
-      sheet = GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onVerticalDragStart: _onDragStart,
-        onVerticalDragUpdate: _onDragUpdate,
-        onVerticalDragEnd: _onDragEnd,
-        child: sheet,
-      );
-    }
-
-    return Transform.translate(
-      offset: Offset(0, _offset),
-      child: sheet,
-    );
+    if (_pullOffset == 0) return sheet;
+    return Transform.translate(offset: Offset(0, _pullOffset), child: sheet);
   }
 }
 

@@ -1,9 +1,11 @@
+import 'package:digger_maps/presentation/widgets/app_notifications.dart';
 import 'package:digger_maps/presentation/widgets/map_controls/bottom_actions.dart';
 import 'package:digger_maps/presentation/widgets/map_controls/calibration_controls.dart';
 import 'package:digger_maps/presentation/widgets/map_controls/left_panel.dart';
 import 'package:digger_maps/presentation/widgets/map_controls/map_bottom_dock.dart';
 import 'package:digger_maps/presentation/widgets/map_controls/recording_overlay.dart';
 import 'package:digger_maps/presentation/widgets/map_controls/spectral_status_chip.dart';
+import 'package:digger_maps/theme/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -97,6 +99,75 @@ Widget actionRail() => ActionRail(
       onShiftPressed: () {},
       onMapsPressed: () {},
     );
+
+/// Подсказка прицеливания — тот же текст, что показывает `MapScreen`.
+const String _aimingHint = 'Перемещайте карту под прицелом и нажмите «Готово»';
+
+/// Собирает реальную связку «хост уведомлений + док в режиме прицеливания +
+/// прицел по центру» и показывает подсказку прицеливания через общий хост.
+///
+/// [MapBottomDock] получает [MapBottomDock.notificationReserve] из
+/// [AppNotifications.themedSnackBarHeight] — ровно так, как это делает экран.
+/// Возвращает контекст, из которого видно общий [ScaffoldMessenger].
+Future<BuildContext> pumpAimingHint(
+  WidgetTester tester, {
+  required Size size,
+}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  addTearDown(() => AppNotifications.bottomInset.value = 0);
+
+  late BuildContext ctx;
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: AppTheme.dark(),
+      builder: (context, child) =>
+          AppNotificationsHost(child: child ?? const SizedBox.shrink()),
+      home: Builder(
+        builder: (context) {
+          ctx = context;
+          return Scaffold(
+            body: Stack(
+              children: <Widget>[
+                const Positioned.fill(
+                  child: Center(
+                    child: SizedBox(
+                      key: Key('reticle'),
+                      width: 44,
+                      height: 44,
+                    ),
+                  ),
+                ),
+                MapBottomDock(
+                  aiming: true,
+                  notificationReserve: AppNotifications.themedSnackBarHeight(
+                    context,
+                    _aimingHint,
+                  ),
+                  primaryPanel: AimActions(onCancel: () {}, onDone: () {}),
+                  panels: <Widget>[stackedBlock('p1', 200)],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+
+  AppNotifications.show(
+    ctx,
+    const SnackBar(
+      content: Text(_aimingHint),
+      duration: Duration(seconds: 3),
+    ),
+  );
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 400));
+  return ctx;
+}
 
 /// Находит прокручиваемую область дока, содержащую [inside].
 ScrollableState dockScrollWith(WidgetTester tester, Finder inside) {
@@ -360,5 +431,43 @@ void main() {
       dock: const MapBottomDock(),
     );
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('прицеливание: запас уведомления укорачивает стопку',
+      (tester) async {
+    const size = Size(400, 600);
+    Widget dock({required double reserve}) => MapBottomDock(
+          aiming: true,
+          notificationReserve: reserve,
+          primaryPanel: stackedBlock('primary', 400),
+        );
+
+    await pumpDock(tester, size: size, dock: dock(reserve: 0));
+    final without = tester.getRect(find.byKey(const Key('primary')));
+
+    await pumpDock(tester, size: size, dock: dock(reserve: 80));
+    final withReserve = tester.getRect(find.byKey(const Key('primary')));
+
+    // Запас ровно сдвигает верх стопки вниз: над кнопками остаётся место
+    // под уведомление, прицел не перекрывается.
+    expect(withReserve.top - without.top, closeTo(80, 0.1));
+  });
+
+  testWidgets('прицеливание: уведомление над кнопками и ниже прицела',
+      (tester) async {
+    for (final size in const <Size>[Size(320, 480), Size(400, 800)]) {
+      await pumpAimingHint(tester, size: size);
+
+      final snack = tester.getRect(find.byType(SnackBar));
+      final buttons = tester.getRect(find.byType(AimActions));
+      final reticle = tester.getRect(find.byKey(const Key('reticle')));
+
+      // Низ уведомления не заходит на кнопки «Отмена»/«Готово».
+      expect(snack.bottom, lessThanOrEqualTo(buttons.top + 0.1));
+      // Верх уведомления не заходит на прицел по центру экрана.
+      expect(snack.top, greaterThanOrEqualTo(reticle.bottom - 0.1));
+      expect(snack.bottom, lessThanOrEqualTo(size.height));
+      expect(snack.top, greaterThan(0));
+    }
   });
 }
