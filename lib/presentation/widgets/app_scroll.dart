@@ -38,6 +38,15 @@ class AppScrollBehavior extends MaterialScrollBehavior {
 /// повторного использования в тестах.
 const AppScrollBehavior appScrollBehavior = AppScrollBehavior();
 
+/// Правый gutter, который контейнер обязан зарезервировать под вертикальный
+/// scrollbar.
+///
+/// Полоса рисуется поверх содержимого (thickness 6 + crossAxisMargin 2 в
+/// [ScrollbarTheme]), поэтому без явного отступа она перекрывает текст у
+/// правого края. Одно и то же значение используют [AppScrollView] и оболочка
+/// редакторов объектов, чтобы полоса была ровно одна и не наезжала на контент.
+const double kAppScrollbarGutter = 8;
+
 /// Помечает поддерево как «уже со scrollbar'ом», чтобы вложенные вертикальные
 /// прокрутки не рисовали вторую полосу поверх первой.
 class AppScrollbarScope extends InheritedWidget {
@@ -157,7 +166,7 @@ class AppScrollView extends StatefulWidget {
     this.padding,
     this.physics,
     this.shrinkWrap = false,
-    this.scrollbarGutter = 8,
+    this.scrollbarGutter = kAppScrollbarGutter,
   });
 
   final int itemCount;

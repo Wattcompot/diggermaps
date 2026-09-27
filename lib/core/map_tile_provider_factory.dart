@@ -287,7 +287,10 @@ class MapTileProviderFactory {
         child: TileLayer(
           urlTemplate: map.urlTemplate,
           tileProvider: createNetworkTileProvider(),
-          maxZoom: map.maxZoom.toDouble(),
+          // Родной зум источника — предел загрузки тайлов; выше и до общего
+          // предела [MapLayers.maxUserZoom] тайлы масштабируются, а не пропадают.
+          maxNativeZoom: map.maxZoom,
+          maxZoom: MapLayers.maxUserZoom,
           panBuffer: 2,
           keepBuffer: 4,
           subdomains: MapLayers.tileSubdomains,

@@ -45,6 +45,7 @@ class ImportDirectoryEntry {
     required this.path,
     required this.isDirectory,
     required this.isArchive,
+    required this.isSupported,
     this.sizeBytes,
     this.modified,
   })  : name = p.basename(path),
@@ -55,6 +56,10 @@ class ImportDirectoryEntry {
   final String nameLower;
   final bool isDirectory;
   final bool isArchive;
+
+  /// Файл имеет одно из уже поддерживаемых картографических расширений
+  /// (см. whitelist, переданный в [ImportDirectoryIndex.load]).
+  final bool isSupported;
   final int? sizeBytes;
   final DateTime? modified;
 
@@ -87,12 +92,20 @@ class ImportDirectoryEntry {
 class ImportDirectoryIndex {
   ImportDirectoryIndex._();
 
-  static Future<List<ImportDirectoryEntry>> load(Directory directory) async {
+  static Future<List<ImportDirectoryEntry>> load(
+    Directory directory, {
+    Set<String> supportedExtensions = const <String>{},
+  }) async {
     final entities = await directory.list().toList();
-    return Future.wait(entities.map(_toEntry));
+    return Future.wait(
+      entities.map((entity) => _toEntry(entity, supportedExtensions)),
+    );
   }
 
-  static Future<ImportDirectoryEntry> _toEntry(FileSystemEntity entity) async {
+  static Future<ImportDirectoryEntry> _toEntry(
+    FileSystemEntity entity,
+    Set<String> supportedExtensions,
+  ) async {
     final isDirectory = entity is Directory;
     int? size;
     DateTime? modified;
@@ -107,21 +120,36 @@ class ImportDirectoryIndex {
       path: entity.path,
       isDirectory: isDirectory,
       isArchive: !isDirectory && ImportArchiveFormats.isArchive(entity.path),
+      isSupported: !isDirectory &&
+          _hasSupportedExtension(entity.path, supportedExtensions),
       sizeBytes: size,
       modified: modified,
     );
   }
 
+  static bool _hasSupportedExtension(
+    String path,
+    Set<String> supportedExtensions,
+  ) {
+    if (supportedExtensions.isEmpty) return false;
+    final lower = path.toLowerCase();
+    return supportedExtensions.any(lower.endsWith);
+  }
+
   /// Фильтрует записи по [query] (без учёта регистра) и сортирует их.
   ///
-  /// Каталоги всегда идут первыми; при [archivesFirst] архивы поднимаются перед
-  /// остальными файлами, но внутри каталогов порядок по полю не меняется.
+  /// Каталоги всегда идут первыми. При [supportedFirst] уже поддерживаемые
+  /// картографические файлы поднимаются сразу за каталогами (перед прочими
+  /// файлами и архивами), при [archivesFirst] — архивы. Внутри каждой группы
+  /// порядок задаёт выбранное поле, поэтому обычные файлы не исчезают, а лишь
+  /// смещаются ниже.
   static List<ImportDirectoryEntry> apply({
     required List<ImportDirectoryEntry> entries,
     String query = '',
     ImportSortField field = ImportSortField.name,
     bool ascending = true,
     bool archivesFirst = false,
+    bool supportedFirst = false,
   }) {
     final normalized = query.trim().toLowerCase();
     final filtered = normalized.isEmpty
@@ -130,6 +158,9 @@ class ImportDirectoryIndex {
 
     filtered.sort((a, b) {
       if (a.isDirectory != b.isDirectory) return a.isDirectory ? -1 : 1;
+      if (supportedFirst && a.isSupported != b.isSupported) {
+        return a.isSupported ? -1 : 1;
+      }
       if (archivesFirst && a.isArchive != b.isArchive) {
         return a.isArchive ? -1 : 1;
       }

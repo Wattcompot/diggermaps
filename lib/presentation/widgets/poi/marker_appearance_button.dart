@@ -8,9 +8,17 @@ class MarkerAppearanceButton extends StatelessWidget {
       {super.key,
       required this.shape,
       required this.colorHex,
+      required this.size,
       required this.onTap});
+
   final String shape;
   final String colorHex;
+
+  /// Размер глифа метки — приходит от единственного состояния размера
+  /// (метка при редактировании, выбор в пикере при создании). Отдельного
+  /// управления размером у кнопки нет.
+  final double size;
+
   final VoidCallback onTap;
 
   @override
@@ -34,14 +42,23 @@ class MarkerAppearanceButton extends StatelessWidget {
             ),
             child: Stack(children: <Widget>[
               Center(
-                  child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
-                child: MarkerShape(
-                    key: ValueKey('$shape:$colorHex'),
-                    shape: shape,
-                    color: MarkerBuilder.parseColorHex(colorHex),
-                    size: 36),
-              )),
+                // Размер анимируем, форму/цвет — кроссфейдом, поэтому при
+                // смене размера глиф плавно растёт/уменьшается, а при смене
+                // формы или цвета мягко переключается.
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween<double>(begin: size, end: size),
+                  duration: kMarkerAnimationDuration,
+                  curve: Curves.easeOut,
+                  builder: (context, animatedSize, _) => AnimatedSwitcher(
+                    duration: kMarkerAnimationDuration,
+                    child: MarkerShape(
+                        key: ValueKey('$shape:$colorHex'),
+                        shape: shape,
+                        color: MarkerBuilder.parseColorHex(colorHex),
+                        size: animatedSize),
+                  ),
+                ),
+              ),
               const Positioned(
                   right: 5,
                   bottom: 5,

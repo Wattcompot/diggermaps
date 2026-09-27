@@ -114,6 +114,10 @@ class _DiggerMapsAppState extends State<DiggerMapsApp> {
       // Единый scrollbar для всех вертикальных списков/меню.
       scrollBehavior: appScrollBehavior,
       // Единый канал SnackBar поверх маршрутов, диалогов и bottom sheet.
+      // AppNotificationsHost держит прозрачный Scaffold с пустым нижним слотом
+      // и сам возвращает Navigator'у исходный MediaQuery, поэтому уведомления
+      // приподнимаются над контролами карты, а SafeArea и bottom-sheet'ы
+      // остаются на месте.
       builder: (context, child) =>
           AppNotificationsHost(child: child ?? const SizedBox.shrink()),
       home: ThemeModeScope(

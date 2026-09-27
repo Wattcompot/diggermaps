@@ -10,6 +10,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/constants/map_layers.dart';
 import '../../core/map_tile_provider_factory.dart';
 import '../../data/models/drawing.dart';
 import '../../data/models/track.dart';
@@ -81,6 +82,11 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   // Обзор мира до восстановления камеры или первого валидного GPS-фикса.
   static const _initialPosition = LatLng(0, 0);
+
+  // Подсказка прицеливания. Одна строка используется и для показа
+  // уведомления, и для расчёта запаса высоты под него в нижнем доке.
+  static const String _aimingHintText =
+      'Перемещайте карту под прицелом и нажмите «Готово»';
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   final MapController _mapController = MapController();
   late final TrackRecordingController _trackRecordingController;
@@ -107,13 +113,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   bool _metricUnits = true;
 
-  double get _baseLayerMaxZoom => _defaultMapSources
-      .firstWhere(
-        (layer) => layer.id == _mapLayersController.baseLayerId,
-        orElse: () => _defaultMapSources.first,
-      )
-      .maxZoom
-      .toDouble();
+  /// Единый предел приближения (см. [MapLayers.maxUserZoom]).
+  ///
+  /// Раньше возвращал родной максимум выбранного базового слоя, из-за чего при
+  /// переключении на слой с меньшим максимумом камеру принудительно опускали
+  /// вниз ([BaseLayerSheet.onZoomClamp]). Теперь предел одинаков для всех слоёв,
+  /// поэтому переключение слоя не меняет текущее приближение — карта остаётся на
+  /// месте, а тайлы выше родного зума масштабируются.
+  double get _baseLayerMaxZoom => MapLayers.maxUserZoom;
 
   int? _selectedDrawingId;
   int? _selectedMarkerId;
@@ -253,6 +260,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       _locationController.flushCamera();
+    }
+    if (state == AppLifecycleState.resumed) {
+      // Разрешение могли выдать в настройках, пока приложение было в фоне, а
+      // служба геолокации — включиться заново: маячок должен вернуться.
+      _locationController.enableLocationLayer();
     }
   }
 
@@ -400,6 +412,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
           MapBottomDock(
             aiming: _mapAimingController.isAiming,
+            // В прицеливании укорачиваем стопку на высоту тематического
+            // SnackBar: уведомление висит над кнопками и не залезает на прицел.
+            notificationReserve: _mapAimingController.isAiming
+                ? AppNotifications.themedSnackBarHeight(
+                    context,
+                    _aimingHintText,
+                  )
+                : 0,
             leftPanel: _buildLeftPanel(),
             stats:
                 TrackRecordingStatsCard(controller: _trackRecordingController),
@@ -489,7 +509,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           curve: Curves.easeOut,
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: _mapSearchController.dismiss,
+            onTap: _mapSearchController.dismissAndUnfocus,
             child: ColoredBox(
               color: Colors.black.withValues(alpha: 0.5),
             ),
@@ -530,6 +550,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           TopBar(
             searchController: _mapSearchController,
             onMenuPressed: () {
+              // Открытие меню снимает фокус с поля поиска: иначе после выбора
+              // результата фреймворк вернул бы фокус полю при закрытии Drawer и
+              // клавиатура всплыла бы сама.
+              _mapSearchController.searchFocusNode.unfocus();
               _closeObjectDetailsSheets();
               _scaffoldKey.currentState?.openDrawer();
             },
@@ -679,19 +703,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _showAimingHint() {
     if (!mounted) return;
-    final theme = Theme.of(context);
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(
-            'Перемещайте карту под прицелом и нажмите «Готово»',
-            style: TextStyle(color: theme.textTheme.bodyMedium?.color),
-          ),
-          backgroundColor: theme.colorScheme.surface,
-          duration: const Duration(seconds: 3),
-        ),
-      );
+    // Тематический SnackBar без кастомных цветов: показывается общим хостом
+    // поверх нижнего дока (см. AppNotificationsHost).
+    AppNotifications.show(
+      context,
+      const SnackBar(
+        content: Text(_aimingHintText),
+        duration: Duration(seconds: 3),
+      ),
+      replace: true,
+    );
   }
 
   Future<void> _finishAimingAtCurrentCenter() {
@@ -1037,7 +1058,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       });
     }
     if (_mapSearchController.panelVisible) {
-      _mapSearchController.dismiss();
+      _mapSearchController.dismissAndUnfocus();
     }
   }
 

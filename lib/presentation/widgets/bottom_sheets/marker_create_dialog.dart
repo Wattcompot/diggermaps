@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../../../data/models/marker_media.dart';
 import '../../../services/media/marker_media_service.dart';
+import '../app_notifications.dart';
 import '../media/marker_media_section.dart';
 import '../poi/marker_appearance_button.dart';
 import 'marker_style_picker_sheet.dart';
@@ -79,7 +80,7 @@ class _MarkerCreateDialogState extends State<MarkerCreateDialog> {
   final _groupController = TextEditingController(text: 'Общее');
   String _selectedColor = '#FF0000';
   String _selectedShape = 'pin';
-  double _selectedSize = 42;
+  double _selectedSize = MarkerStylePickerSheet.defaultSize;
   String? _nameError;
 
   late final MarkerMediaService _mediaService;
@@ -126,11 +127,8 @@ class _MarkerCreateDialogState extends State<MarkerCreateDialog> {
     }
   }
 
-  void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
+  void _showMessage(String message) =>
+      AppNotifications.message(context, message);
 
   Future<void> _copyCoordinates() async {
     await Clipboard.setData(
@@ -271,6 +269,7 @@ class _MarkerCreateDialogState extends State<MarkerCreateDialog> {
                   MarkerAppearanceButton(
                       shape: _selectedShape,
                       colorHex: _selectedColor,
+                      size: _selectedSize,
                       onTap: _editAppearance),
                   const SizedBox(width: 12),
                   Expanded(

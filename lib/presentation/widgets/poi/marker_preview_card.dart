@@ -52,6 +52,9 @@ class MarkerPreviewCard extends StatelessWidget {
                   MarkerPhotoPreview(
                     key: ValueKey('photo-${photo.fileRef}'),
                     media: photo,
+                    // Плашка на карте: фото — визуальный preview, а тап по
+                    // плашке открывает метку. Просмотр фото — в редакторе.
+                    interactive: false,
                   ),
                   if (marker.photoCount > 1)
                     Text(

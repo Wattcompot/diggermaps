@@ -34,6 +34,10 @@ class SettingsSheet extends StatefulWidget {
   }) {
     return showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
+      // Ручка + полноэкранный жест: лист закрывается с любого места, а не
+      // только за полоску сверху.
+      showDragHandle: true,
       builder: (_) => SettingsSheet(
         initialCleanupDays: initialCleanupDays,
         metricUnits: metricUnits,

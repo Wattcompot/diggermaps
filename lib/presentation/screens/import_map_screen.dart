@@ -3,6 +3,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive_io.dart';
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:path/path.dart' as p;
@@ -94,7 +96,12 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
   String _searchQuery = '';
   ImportSortField _sortField = ImportSortField.name;
   bool _sortAscending = true;
-  bool _archivesFirst = false;
+  // По умолчанию архивы всплывают наверх списка: это основной сценарий импорта.
+  // Значение не сохраняется между сессиями — экран всегда открывается с этим
+  // порядком, поэтому у существующих пользователей не может «всплыть» старое
+  // состояние. Переключатели ниже остаются доступны для ручной смены.
+  bool _archivesFirst = true;
+  bool _supportedFirst = false;
 
   final ImportedMapRepository _importedRepo = ImportedMapRepository();
   final TrackRepository _trackRepo = TrackRepository();
@@ -105,6 +112,7 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
         field: _sortField,
         ascending: _sortAscending,
         archivesFirst: _archivesFirst,
+        supportedFirst: _supportedFirst,
       );
 
   // ---------------------------------------------------------------------------
@@ -264,7 +272,10 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
       }
       // Читаем каталог и метаданные (size/modified) ровно один раз за проход —
       // фильтрация и сортировка дальше идут по кэшу, без stat и без I/O.
-      final entries = await ImportDirectoryIndex.load(dir);
+      final entries = await ImportDirectoryIndex.load(
+        dir,
+        supportedExtensions: _supportedExtensions,
+      );
       if (!mounted) return;
 
       setState(() {
@@ -319,6 +330,150 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
   }
 
   // ---------------------------------------------------------------------------
+  // Архивы
+  // ---------------------------------------------------------------------------
+
+  /// Архивы, содержимое которых умеет распаковывать встроенный декодер.
+  ///
+  /// `.7z` и `.rar` распознаются как архивы, но открыть их нельзя — про это
+  /// честно сообщаем вместо молчаливого «ничего не произошло».
+  static const Set<String> _unpackableArchives = <String>{
+    '.zip',
+    '.tar',
+    '.tar.gz',
+    '.tgz',
+    '.tar.bz2',
+    '.tbz2',
+    '.tbz',
+    '.tar.xz',
+    '.txz',
+  };
+
+  String _archiveExtension(String path) {
+    final lower = path.toLowerCase();
+    for (final suffix in ImportArchiveFormats.suffixes) {
+      if (lower.endsWith(suffix)) return suffix;
+    }
+    return '';
+  }
+
+  bool _canUnpack(String path) =>
+      _unpackableArchives.contains(_archiveExtension(path));
+
+  /// Распаковывает архив в папку приложения и открывает её в браузере файлов.
+  ///
+  /// Распаковка идёт рядом с импортированными картами (во внутреннем хранилище),
+  /// поэтому доступ к внешнему хранилищу после этого не нужен. Структура папок
+  /// внутри архива сохраняется: если в нём лежат `.map` и `.ozf2` рядом, импорт
+  /// Ozi найдёт калибровку и растр как обычно.
+  Future<void> _onArchiveTap(String archivePath) async {
+    final name = p.basename(archivePath);
+    if (!_canUnpack(archivePath)) {
+      AppNotifications.message(
+        context,
+        'Формат «${_archiveExtension(archivePath)}» пока не поддерживается. '
+        'Распакуйте архив в ZIP и повторите импорт',
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Распаковать архив?'),
+        content: Text(
+          '«$name» будет распакован во внутреннее хранилище приложения. '
+          'После этого откроется папка с содержимым, и карту можно будет '
+          'импортировать как обычно.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Распаковать'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+
+    setState(() {
+      _loading = true;
+      _statusText = 'Распаковка…';
+    });
+
+    Directory? target;
+    try {
+      final supportDir = await getApplicationSupportDirectory();
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+      final safeName = name.replaceAll(RegExp(r'[^\wА-Яа-яЁё.-]'), '_');
+      target = Directory(
+        p.join(supportDir.path, 'imported_maps', '_unpacked',
+            '${safeName}_$stamp'),
+      );
+      await target.create(recursive: true);
+
+      await compute(
+        _extractArchiveTask,
+        _ExtractRequest(archivePath: archivePath, targetPath: target.path),
+      );
+
+      final files = await _countSupportedFiles(target);
+      if (!mounted) return;
+      AppNotifications.show(
+        context,
+        SnackBar(
+          content: Text(
+            files == 0
+                ? 'Архив распакован, но карт внутри не найдено'
+                : 'Распаковано, найдено файлов карт: $files',
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      // Открываем папку с распакованным содержимым в том же браузере.
+      await _navigateTo(target.path);
+    } catch (error) {
+      if (!mounted) return;
+      if (target != null && await target.exists()) {
+        // Неудачная распаковка не должна оставлять мусор.
+        try {
+          await target.delete(recursive: true);
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      AppNotifications.show(
+        context,
+        SnackBar(
+          content: Text('Не удалось распаковать архив: $error'),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _statusText = '';
+        });
+      }
+    }
+  }
+
+  /// Считает, сколько файлов поддерживаемых форматов лежит в распакованной
+  /// папке (включая вложенные) — чтобы сразу сказать, есть ли смысл идти внутрь.
+  Future<int> _countSupportedFiles(Directory directory) async {
+    var count = 0;
+    await for (final entity
+        in directory.list(recursive: true, followLinks: false)) {
+      if (entity is File && _isSupported(entity.path)) count++;
+    }
+    return count;
+  }
+
+  // ---------------------------------------------------------------------------
   // Import triggering
   // ---------------------------------------------------------------------------
 
@@ -331,6 +486,7 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
     final customName = await showModalBottomSheet<String>(
       context: context,
       isScrollControlled: true,
+      showDragHandle: true,
       backgroundColor: Theme.of(context).colorScheme.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
@@ -1006,21 +1162,36 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
             ],
           ),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              FilterChip(
-                label: const Text('Архивы сначала'),
-                selected: _archivesFirst,
-                onSelected: (value) => setState(() => _archivesFirst = value),
+              Expanded(
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    FilterChip(
+                      label: const Text('Поддерживаемые сначала'),
+                      selected: _supportedFirst,
+                      onSelected: (value) =>
+                          setState(() => _supportedFirst = value),
+                    ),
+                    FilterChip(
+                      label: const Text('Архивы сначала'),
+                      selected: _archivesFirst,
+                      onSelected: (value) =>
+                          setState(() => _archivesFirst = value),
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  hiddenBySearch
-                      ? 'Найдено: ${visible.length} из ${_entries.length}'
-                      : '${visible.length} элементов',
-                  textAlign: TextAlign.right,
-                  style: TextStyle(fontSize: 12, color: muted),
-                ),
+              Text(
+                hiddenBySearch
+                    ? 'Найдено: ${visible.length} из ${_entries.length}'
+                    : '${visible.length} элементов',
+                textAlign: TextAlign.right,
+                style: TextStyle(fontSize: 12, color: muted),
               ),
             ],
           ),
@@ -1172,6 +1343,10 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
   Widget _buildEntryTile(ImportDirectoryEntry entry) {
     final isDir = entry.isDirectory;
     final isSupported = !isDir && _isSupported(entry.path);
+    final isArchive = !isDir && entry.isArchive;
+    // Архивы теперь тоже действие: их можно распаковать и импортировать
+    // содержимое, поэтому они выглядят доступными, а не серыми в списке.
+    final actionable = isDir || isSupported || isArchive;
     final scheme = Theme.of(context).colorScheme;
     final subtitle = isDir ? null : _entrySubtitle(entry, isSupported);
 
@@ -1179,10 +1354,10 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
       leading: Icon(
         isDir
             ? Icons.folder
-            : entry.isArchive
+            : isArchive
                 ? Icons.archive_outlined
                 : Icons.insert_drive_file,
-        color: isDir || isSupported ? const Color(0xFFA67B5B) : Colors.grey,
+        color: actionable ? const Color(0xFFA67B5B) : Colors.grey,
       ),
       title: Text(
         entry.name,
@@ -1200,11 +1375,19 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
                 color: scheme.onSurface.withValues(alpha: 0.6),
               ),
             ),
+      trailing: isArchive
+          ? Icon(
+              Icons.unarchive_outlined,
+              color: scheme.onSurface.withValues(alpha: 0.7),
+            )
+          : null,
       onTap: () {
         if (isDir) {
           _navigateTo(entry.path);
         } else if (isSupported) {
           _onSupportedFileTap(entry.path);
+        } else if (isArchive) {
+          _onArchiveTap(entry.path);
         }
       },
     );
@@ -1213,7 +1396,7 @@ class _ImportMapScreenState extends State<ImportMapScreen> {
   String? _entrySubtitle(ImportDirectoryEntry entry, bool isSupported) {
     final parts = <String>[
       if (isSupported) _formatLabel(entry.path),
-      if (entry.isArchive) 'Архив',
+      if (entry.isArchive) 'Архив — распаковать',
       if (entry.sizeBytes != null) _formatBytes(entry.sizeBytes!),
       if (entry.modified != null) _formatDate(entry.modified!),
     ];
@@ -1371,4 +1554,32 @@ class _ImportBottomSheetState extends State<_ImportBottomSheet> {
       ),
     );
   }
+}
+
+// =============================================================================
+// Распаковка архивов (в фоновом изоляте)
+// =============================================================================
+
+/// Запрос на распаковку: путь к архиву и папка назначения.
+class _ExtractRequest {
+  const _ExtractRequest({required this.archivePath, required this.targetPath});
+
+  final String archivePath;
+  final String targetPath;
+}
+
+/// Распаковывает архив во внутреннее хранилище.
+///
+/// Вынесено в `compute`, потому что распаковка больших карт (сотни мегабайт)
+/// блокировала бы интерфейс. Декодер `archive` сам защищает от путей вида
+/// `../` внутри архива.
+Future<int> _extractArchiveTask(_ExtractRequest request) async {
+  final target = Directory(request.targetPath);
+  if (!await target.exists()) await target.create(recursive: true);
+  await extractFileToDisk(request.archivePath, target.path);
+  var files = 0;
+  await for (final entity in target.list(recursive: true, followLinks: false)) {
+    if (entity is File) files++;
+  }
+  return files;
 }

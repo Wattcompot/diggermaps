@@ -4,5 +4,11 @@
 <dict>
   <key>NSLocationWhenInUseUsageDescription</key>
   <string>DiggerMaps использует геопозицию, чтобы показывать ваше положение на карте.</string>
+  <key>NSPhotoLibraryUsageDescription</key>
+  <string>DiggerMaps открывает галерею устройства, чтобы прикреплять фото и видео к меткам.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>DiggerMaps использует камеру, чтобы снимать фото и видео для метки.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>DiggerMaps использует микрофон для голосовых заметок к метке.</string>
 </dict>
 </plist>

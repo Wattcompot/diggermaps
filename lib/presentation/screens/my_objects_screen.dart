@@ -12,6 +12,7 @@ import '../../data/models/track.dart';
 import '../../data/models/user_marker.dart';
 import '../providers/map_data_controller.dart';
 import '../widgets/confirm_object_delete.dart';
+import '../widgets/poi/marker_shape.dart';
 
 enum MapObjectType { marker, drawing, track }
 
@@ -515,7 +516,7 @@ class _ObjectPreview extends StatelessWidget {
     required this.points,
     required this.color,
     this.markerPoint,
-    this.markerShape = 'location_on',
+    this.markerShape = 'pin',
     this.polygon = false,
   });
 
@@ -600,7 +601,10 @@ class _ObjectPreview extends StatelessWidget {
                     point: markerPoint!,
                     width: 28,
                     height: 28,
-                    child: _markerIcon(),
+                    // Тот же общий глиф, что и на карте/в пикере — без
+                    // локальной копии switch по формам.
+                    child:
+                        MarkerShape(shape: markerShape, color: color, size: 26),
                   ),
                 ],
               ),
@@ -609,22 +613,6 @@ class _ObjectPreview extends StatelessWidget {
       ),
     );
   }
-
-  Widget _markerIcon() => switch (markerShape) {
-        'square' => Container(width: 20, height: 20, color: color),
-        'triangle' => Icon(Icons.change_history, color: color, size: 26),
-        'circle' => Container(
-            width: 20,
-            height: 20,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-          ),
-        'place' => Icon(Icons.place, color: color, size: 26),
-        'flag' => Icon(Icons.flag, color: color, size: 26),
-        'star' => Icon(Icons.star, color: color, size: 26),
-        'home' => Icon(Icons.home, color: color, size: 26),
-        'work' => Icon(Icons.work, color: color, size: 26),
-        _ => Icon(Icons.location_on, color: color, size: 26),
-      };
 
   static LatLng _center(List<LatLng> points) {
     var minLat = points.first.latitude;

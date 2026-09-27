@@ -99,12 +99,14 @@ void main() {
         path: '/f/old.txt',
         isDirectory: false,
         isArchive: false,
+        isSupported: false,
         modified: DateTime(2020),
       );
       final newer = ImportDirectoryEntry(
         path: '/f/new.txt',
         isDirectory: false,
         isArchive: false,
+        isSupported: false,
         modified: DateTime(2024),
       );
 

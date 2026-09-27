@@ -22,6 +22,62 @@ class MarkerStylePickerSheet extends StatefulWidget {
       required this.initialSize,
       this.previewBuilder});
 
+  /// Формы метки: единственный источник правды для пикера (и тестов).
+  static const shapes = <String, String>{
+    'pin': 'Метка',
+    'star': 'Звезда',
+    'flag': 'Флаг',
+    'home': 'Дом',
+    'work': 'Работа',
+    'circle': 'Круг',
+    'square': 'Квадрат',
+    'triangle': 'Треугольник',
+  };
+
+  /// Палитра меток: единственный источник правды для пикера (и тестов).
+  ///
+  /// Здесь ровно один коричневый (`#C4956A`): раньше рядом жил ещё один
+  /// почти такой же `#A67B5B`, который к тому же совпадал с акцентом UI, а не
+  /// с цветом метки. Уже сохранённые метки со старым значением продолжают
+  /// рисоваться — рендер не зависит от наличия цвета в палитре.
+  ///
+  /// Красный совпадает со значением по умолчанию у новой метки (`#FF0000`),
+  /// чтобы дефолт был выбран в пикере, а не показывался как «Выбранный».
+  static const colors = <String, String>{
+    '#C4956A': 'Коричневый',
+    '#FF0000': 'Красный',
+    '#2196F3': 'Синий',
+    '#4CAF50': 'Зелёный',
+    '#FFEB3B': 'Жёлтый',
+    '#FF9800': 'Оранжевый',
+    '#9C27B0': 'Фиолетовый',
+    '#FFFFFF': 'Белый',
+  };
+
+  /// Предустановленные размеры метки: единственный источник правды для пикера
+  /// (и тестов).
+  ///
+  /// Выбор в чипах сравнивается с ключом ТОЧНО (`_size == entry.key`). Раньше
+  /// здесь было «ближайшее» значение, из-за чего сохранённый legacy-размер 42
+  /// показывался выбранным чип «Большой» (48), хотя метка рисовалась и
+  /// сохранялась как 42.
+  /// `final`, а не `const`: в Dart ключ константной карты не может быть
+  /// `double` (он переопределяет `==`/`hashCode`), поэтому карта собирается
+  /// один раз при первом обращении и защищается от изменений.
+  static final Map<double, String> sizes = Map<double, String>.unmodifiable(
+    <double, String>{
+      24: 'Маленький',
+      32: 'Средний',
+      48: 'Большой',
+    },
+  );
+
+  /// Канонический размер по умолчанию — тот же, что у чипа «Средний».
+  ///
+  /// Легаси-значения (например 42) на него не подменяются: пикер показывает
+  /// фактический размер метки, пока пользователь не выберет предустановку.
+  static const double defaultSize = 32;
+
   final LatLng point;
   final String initialShape;
   final String initialColor;
@@ -37,10 +93,8 @@ class MarkerStylePickerSheet extends StatefulWidget {
     required double initialSize,
     Widget Function(String shape, String colorHex, double size)? previewBuilder,
   }) =>
-      showModalBottomSheet<MarkerStyleSelection>(
+      showObjectBottomSheet<MarkerStyleSelection>(
         context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
         builder: (_) => MarkerStylePickerSheet(
             point: point,
             initialShape: initialShape,
@@ -54,27 +108,6 @@ class MarkerStylePickerSheet extends StatefulWidget {
 }
 
 class _MarkerStylePickerSheetState extends State<MarkerStylePickerSheet> {
-  static const _shapes = <String, String>{
-    'pin': 'Метка',
-    'star': 'Звезда',
-    'flag': 'Флаг',
-    'home': 'Дом',
-    'work': 'Работа',
-    'circle': 'Круг',
-    'square': 'Квадрат',
-    'triangle': 'Треугольник',
-  };
-  static const _colors = <String, String>{
-    '#C4956A': 'Коричневый',
-    '#A67B5B': 'Тёмно-коричневый',
-    '#F44336': 'Красный',
-    '#2196F3': 'Синий',
-    '#4CAF50': 'Зелёный',
-    '#FFEB3B': 'Жёлтый',
-    '#FF9800': 'Оранжевый',
-    '#9C27B0': 'Фиолетовый',
-    '#FFFFFF': 'Белый',
-  };
   late String _shape;
   late String _color;
   late double _size;
@@ -123,8 +156,8 @@ class _MarkerStylePickerSheetState extends State<MarkerStylePickerSheet> {
           ),
         ),
         const SizedBox(height: 8),
-        _expander('Форма', _shapes[_shape] ?? 'Метка', _showShapes,
-            () => setState(() => _showShapes = !_showShapes)),
+        _expander('Форма', MarkerStylePickerSheet.shapes[_shape] ?? 'Метка',
+            _showShapes, () => setState(() => _showShapes = !_showShapes)),
         AnimatedSize(
           duration: const Duration(milliseconds: 180),
           alignment: Alignment.topCenter,
@@ -133,7 +166,7 @@ class _MarkerStylePickerSheetState extends State<MarkerStylePickerSheet> {
               : Wrap(
                   spacing: 6,
                   runSpacing: 6,
-                  children: _shapes.entries
+                  children: MarkerStylePickerSheet.shapes.entries
                       .map((entry) => Tooltip(
                             message: entry.value,
                             child: InkWell(
@@ -165,8 +198,8 @@ class _MarkerStylePickerSheetState extends State<MarkerStylePickerSheet> {
                       .toList(),
                 ),
         ),
-        _expander('Цвет', _colors[_color] ?? 'Выбранный', _showColors,
-            () => setState(() => _showColors = !_showColors)),
+        _expander('Цвет', MarkerStylePickerSheet.colors[_color] ?? 'Выбранный',
+            _showColors, () => setState(() => _showColors = !_showColors)),
         AnimatedSize(
           duration: const Duration(milliseconds: 180),
           alignment: Alignment.topCenter,
@@ -175,7 +208,7 @@ class _MarkerStylePickerSheetState extends State<MarkerStylePickerSheet> {
               : Wrap(
                   spacing: 6,
                   runSpacing: 6,
-                  children: _colors.entries
+                  children: MarkerStylePickerSheet.colors.entries
                       .map((entry) => Tooltip(
                             message: entry.value,
                             child: InkWell(
@@ -221,17 +254,21 @@ class _MarkerStylePickerSheetState extends State<MarkerStylePickerSheet> {
         Text('Размер', style: theme.textTheme.labelLarge),
         const SizedBox(height: 8),
         Wrap(spacing: 6, runSpacing: 6, children: <Widget>[
-          for (final entry in <double, String>{
-            24: 'Маленький',
-            32: 'Средний',
-            48: 'Большой'
-          }.entries)
+          for (final entry in MarkerStylePickerSheet.sizes.entries)
             ChoiceChip(
                 label: Text(entry.value),
-                selected: _closestSize(_size) == entry.key,
+                selected: _size == entry.key,
                 showCheckmark: false,
                 onSelected: (_) => setState(() => _size = entry.key)),
         ]),
+        // Сохранённый legacy-размер вне предустановок: не второй контрол, а
+        // пояснение. Метка продолжает рисоваться и сохраняться своим размером,
+        // пока пользователь сам не выберет предустановку.
+        if (!MarkerStylePickerSheet.sizes.containsKey(_size)) ...[
+          const SizedBox(height: 8),
+          Text('Сохранённый размер: ${_formatSize(_size)}',
+              style: theme.textTheme.bodySmall),
+        ],
         const SizedBox(height: 12),
         Align(
             alignment: Alignment.centerRight,
@@ -259,9 +296,7 @@ class _MarkerStylePickerSheetState extends State<MarkerStylePickerSheet> {
             child: const Icon(Icons.chevron_right)),
       );
 
-  static double _closestSize(double size) => size < 28
-      ? 24
-      : size < 40
-          ? 32
-          : 48;
+  /// Размер без хвоста `.0`: legacy-значение 42.0 показывается как `42`.
+  static String _formatSize(double size) =>
+      size == size.roundToDouble() ? '${size.toInt()}' : '$size';
 }

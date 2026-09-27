@@ -35,10 +35,8 @@ class DrawingBottomSheet extends StatefulWidget {
     required VoidCallback onCopyCoordinates,
     required VoidCallback onNavigation,
   }) =>
-      showModalBottomSheet<Drawing>(
+      showObjectBottomSheet<Drawing>(
         context: context,
-        isScrollControlled: true,
-        backgroundColor: Colors.transparent,
         builder: (_) => DrawingBottomSheet(
           drawing: drawing,
           typeLabel: typeLabel,

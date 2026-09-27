@@ -15,6 +15,14 @@ class MapSearchController extends ChangeNotifier {
   final ValueChanged<String>? onError;
   final TextEditingController textController = TextEditingController();
 
+  /// Явный фокус-нод поля поиска.
+  ///
+  /// Нужен, чтобы после выбора результата (и по тапу вне панели) программно
+  /// снять фокус и спрятать клавиатуру. Без собственного нода фокусом владеет
+  /// внутренний нод `TextField`, и при открытии/закрытии Drawer или bottom
+  /// sheet фреймворк возвращал фокус полю — клавиатура всплывала сама.
+  final FocusNode searchFocusNode = FocusNode();
+
   Timer? _searchDebounce;
   CancelToken? _searchCancelToken;
   int _searchRequestId = 0;
@@ -99,7 +107,10 @@ class MapSearchController extends ChangeNotifier {
   }
 
   Future<SearchResult> selectResult(SearchResult result) async {
-    dismiss();
+    // Результат выбран — сворачиваем панель И снимаем фокус/клавиатуру, чтобы
+    // карта осталась на найденной точке, а последующее открытие меню/листа не
+    // возвращало фокус полю.
+    dismissAndUnfocus();
     await _repository.addToHistory(result);
     return result;
   }
@@ -115,6 +126,15 @@ class MapSearchController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Свернуть панель и одновременно снять фокус (тап по затемнению, выбор
+  /// результата, тап по карте). В отличие от [dismiss] трогает фокус, поэтому
+  /// НЕ вызывается из [onSearchChanged] при пустом запросе — там пользователь
+  /// продолжает ввод и фокус должен сохраниться.
+  void dismissAndUnfocus() {
+    searchFocusNode.unfocus();
+    dismiss();
+  }
+
   void clear() {
     textController.clear();
     dismiss();
@@ -125,6 +145,7 @@ class MapSearchController extends ChangeNotifier {
     _searchDebounce?.cancel();
     _searchCancelToken?.cancel();
     textController.dispose();
+    searchFocusNode.dispose();
     super.dispose();
   }
 }

@@ -14,6 +14,17 @@
 # Hive
 -keep class com.hive.** { *; }
 
+# Glide (используется плагином photo_manager для миниатюр галереи).
+-keep public class * implements com.bumptech.glide.module.GlideModule
+-keep class * extends com.bumptech.glide.module.AppGlideModule {
+    <init>(...);
+}
+-keep public enum com.bumptech.glide.load.resource.bitmap.ImageHeaderParser$** {
+    **[] $VALUES;
+    public *;
+}
+-dontwarn com.bumptech.glide.**
+
 # Flutter engine contains optional deferred-component integration. This app does
 # not declare deferred components, so the Play Core classes are unreachable.
 -dontwarn com.google.android.play.core.splitcompat.SplitCompatApplication

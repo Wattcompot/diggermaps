@@ -6,6 +6,16 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// ВРЕМЕННАЯ диагностика пути GPS-маячка. По умолчанию ВЫКЛЮЧЕНА — обычный
+/// билд не меняется. Чтобы увидеть, на каком звене теряется позиция, соберите
+/// с `--dart-define=GPS_DEBUG=true` и снимите logcat по метке `[GPS]`.
+/// После локализации причины этот блок и все вызовы `_gpsLog` удаляются.
+const bool _kGpsDebug = bool.fromEnvironment('GPS_DEBUG');
+
+void _gpsLog(String message) {
+  if (_kGpsDebug) debugPrint('[GPS] $message');
+}
+
 /// Абстракция над платформенной геолокацией.
 ///
 /// Нужна, чтобы поведение при старте (сохранённая камера / GPS / разрешения)
@@ -238,24 +248,157 @@ class LocationController extends ChangeNotifier {
 
   /// Один общий поток позиций для слоя маячка.
   ///
-  /// Создаётся лениво и один раз: если создавать `getPositionStream()` в
-  /// каждом `build`, слой маячка переподписывается на каждый rebuild карты и
-  /// «мигает»/пропадает. Стрим broadcast, поэтому переживает пересоздание
-  /// слоя (например, при открытии/закрытии меню).
+  /// Создаётся лениво и один раз (идентичность сохраняется между пересборками
+  /// карты — см. `LocationMarkerStream`), а сам контроллер живёт до `dispose`.
+  ///
+  /// Важно: сюда обращается `build` карты на ПЕРВОЙ отрисовке — то есть ещё до
+  /// выдачи разрешения на геолокацию. Поэтому геттер создаёт только контроллер
+  /// и НЕ подписывается на geolocator: подписка без разрешения немедленно
+  /// завершается ошибкой и `onDone`, после чего источник мёртв навсегда, а
+  /// мемоизация (`_positionStream ??=`) уже не даёт его пересоздать — маячок
+  /// не появляется и не двигается. Живой источник поднимает
+  /// [_ensureLivePositionSource] уже ПОСЛЕ подтверждённого разрешения.
   Stream<Position> get positionStream =>
-      _positionStream ??= _dataSource.positionStream().asBroadcastStream();
+      _positionStream ??= _ensureController().stream;
   Stream<Position>? _positionStream;
+  StreamController<Position>? _positionController;
+  StreamSubscription<Position>? _positionSubscription;
+  Position? _lastPosition;
+
+  /// Жива ли подписка на непрерывный источник позиций.
+  ///
+  /// Помечается `false` при закрытии источника (`onDone`) и в [dispose], чтобы
+  /// следующее включение слоя переподписалось вместо тишины.
+  bool _sourceLive = false;
+
+  /// Гарантирует существование общего broadcast-контроллера позиций.
+  ///
+  /// Контроллер создаётся один раз и живёт до [dispose]; каждый новый слушатель
+  /// (в т. ч. после пересборки слоя) сразу получает последнюю известную позицию
+  /// через `onListen`, поэтому маячок появляется мгновенно, не дожидаясь нового
+  /// GPS-события (телефон в покое может молчать минутами). Здесь НЕ подписываемся
+  /// на geolocator — см. [positionStream].
+  StreamController<Position> _ensureController() {
+    final existing = _positionController;
+    if (existing != null && !existing.isClosed) return existing;
+    final controller = StreamController<Position>.broadcast(
+      onListen: _replayLastPosition,
+    );
+    _positionController = controller;
+    return controller;
+  }
+
+  /// (Пере)подписывается на непрерывный поток геолокации, направляя события в
+  /// тот же самый [_positionController]. Идемпотентно: если подписка жива —
+  /// ничего не делает.
+  ///
+  /// Вызывается только после подтверждённого разрешения (см.
+  /// [enableLocationLayer], [_locateAndMove]). Если источник завершится (Android
+  /// закрывает поток при отзыве разрешения / выключении сервиса), подписка
+  /// помечается мёртвой в `onDone`, и следующее включение слоя (например, на
+  /// resume) переподпишется — без второго слушателя, контроллера или
+  /// параллельной системы позиционирования.
+  void _ensureLivePositionSource() {
+    if (_disposed || _sourceLive) return;
+    final controller = _ensureController();
+    if (controller.isClosed) return;
+    _positionSubscription?.cancel();
+    _sourceLive = true;
+    _gpsLog('_ensureLivePositionSource: подписка на geolocator создана');
+    _positionSubscription = _dataSource.positionStream().listen(
+      (position) {
+        if (_isValidPosition(position)) _lastPosition = position;
+        if (!controller.isClosed) controller.add(position);
+        _gpsLog('source: позиция ${position.latitude},${position.longitude} '
+            '→ в поток');
+      },
+      onError: (Object error) {
+        _gpsLog('source: ошибка потока $error (маячок держит последнюю)');
+        // Ошибка потока (сервис выключили, разрешение отозвали) не должна
+        // гасить маячок: последняя известная позиция остаётся на карте, а
+        // новые события придут, когда геолокация вернётся.
+      },
+      onDone: () {
+        _gpsLog(
+            'source: поток закрылся (onDone) — переармим при след. включении');
+        // Источник закрылся (обычно отзыв разрешения / выключение сервиса на
+        // Android). Помечаем подписку мёртвой, чтобы следующее включение слоя
+        // переподписалось на живой источник вместо тишины.
+        _sourceLive = false;
+      },
+      cancelOnError: false,
+    );
+  }
+
+  void _replayLastPosition() {
+    final last = _lastPosition;
+    final controller = _positionController;
+    if (last == null || controller == null || controller.isClosed) {
+      _gpsLog('onListen: новый подписчик, но повторять нечего '
+          '(last=${last != null})');
+      return;
+    }
+    _gpsLog('onListen: повторяем последнюю позицию новому подписчику слоя');
+    controller.add(last);
+  }
 
   /// Включить слой маячка без перемещения камеры.
   ///
   /// Вызывается при старте после проверки разрешения — независимо от того,
   /// есть ли сохранённая камера. Раньше слой включался только внутри
   /// `_locateAndMove`, и при сохранённой камере маячок не появлялся вовсе.
+  ///
+  /// Ранний выход был убран сознательно: метод вызывается и на каждом resume,
+  /// когда непрерывный источник мог умереть (Android закрывает поток при
+  /// сворачивании / отзыве разрешения). Поэтому здесь всегда переармливаем
+  /// источник (идемпотентно) и досылаем свежий фикс — иначе маячок после
+  /// возврата в приложение застыл бы или пропал.
   Future<void> enableLocationLayer() async {
-    if (_locationLayerEnabled || _disposed) return;
-    if (!await handleLocationPermission(silent: true) || _disposed) return;
-    _locationLayerEnabled = true;
-    _notify();
+    if (_disposed) return;
+    _gpsLog('enableLocationLayer: старт (layerEnabled=$_locationLayerEnabled)');
+    if (!await handleLocationPermission(silent: true) || _disposed) {
+      _gpsLog('enableLocationLayer: разрешение/сервис не даны — выходим');
+      return;
+    }
+    if (!_locationLayerEnabled) {
+      _locationLayerEnabled = true;
+      _notify();
+      _gpsLog('enableLocationLayer: слой включён, notify отправлен');
+    }
+    // Разрешение подтверждено — теперь безопасно поднять живой источник.
+    // Непрерывный поток отдаёт позицию лишь при движении, а до выдачи
+    // разрешения источник не поднимался вовсе. Досылаем свежий фикс в тот же
+    // существующий контроллер — без нового слушателя и без второй системы
+    // позиционирования, иначе на неподвижном устройстве маячок не появится,
+    // пока его не сдвинут.
+    _ensureLivePositionSource();
+    unawaited(_pushFreshFix());
+  }
+
+  /// Разово запрашивает позицию и досылает её в текущий поток маячка.
+  ///
+  /// В отличие от [_seedInitialPosition] не одноразовый: вызывается в момент,
+  /// когда слой включается (например, после выдачи разрешения на resume).
+  /// Работает поверх уже созданного [_positionController]; если поток ещё не
+  /// создан, первичный seed при первой подписке закроет разрыв сам.
+  Future<void> _pushFreshFix() async {
+    if (_disposed) return;
+    final controller = _positionController;
+    if (controller == null || controller.isClosed) return;
+    final Position? position;
+    try {
+      position = await _resolvePosition();
+    } catch (_) {
+      return;
+    }
+    if (_disposed || position == null || !_isValidPosition(position)) {
+      _gpsLog('_pushFreshFix: фикс не получен (null/невалидно)');
+      return;
+    }
+    _lastPosition = position;
+    if (!controller.isClosed) controller.add(position);
+    _gpsLog('_pushFreshFix: свежий фикс ${position.latitude},'
+        '${position.longitude} досланы в поток');
   }
 
   /// Сохранённая камера (если есть и валидна).
@@ -335,8 +478,14 @@ class LocationController extends ChangeNotifier {
     final generation = _gestureGeneration;
     if (!await handleLocationPermission() || _disposed) return;
     if (generation != _gestureGeneration) {
-      _locationLayerEnabled = true;
-      _notify();
+      if (!_locationLayerEnabled) {
+        _locationLayerEnabled = true;
+        _notify();
+      }
+      // Разрешение подтверждено, но пользователь уже двигал карту: камеру не
+      // перехватываем, однако живой источник поднимаем — маячок должен быть.
+      _ensureLivePositionSource();
+      unawaited(_pushFreshFix());
       return;
     }
     await _locateAndMove(follow: false);
@@ -422,6 +571,9 @@ class LocationController extends ChangeNotifier {
       _locationLayerEnabled = true;
       _notify();
     }
+    // Пользователь явно попросил геопозицию — поднимаем живой источник, чтобы
+    // маячок не только появился, но и следовал за движением.
+    _ensureLivePositionSource();
     Position? position;
     try {
       position = await _resolvePosition();
@@ -434,6 +586,11 @@ class LocationController extends ChangeNotifier {
       _onMessage('Не удалось определить местоположение');
       return;
     }
+    // Досылаем фикс в общий поток, чтобы маячок отрисовался немедленно, даже
+    // если непрерывный поток ещё не успел отдать первое событие.
+    _lastPosition = position;
+    final controller = _positionController;
+    if (controller != null && !controller.isClosed) controller.add(position);
     if (generation != _gestureGeneration) {
       // Пока шёл фикс, пользователь сам сдвинул карту: камеру не перехватываем
       // и follow не навязываем.
@@ -510,8 +667,13 @@ class LocationController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _sourceLive = false;
     _persistDebounce?.cancel();
     _persistDebounce = null;
+    _positionSubscription?.cancel();
+    _positionSubscription = null;
+    _positionController?.close();
+    _positionController = null;
     final pending = _pendingCamera;
     _pendingCamera = null;
     if (pending != null) {
